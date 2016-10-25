@@ -27,6 +27,9 @@ public class Parameter {
 			}
 		}
     }
+    public void put(String key, String value) {
+    	parameterMap.put(key, value);
+    }
 	public String get(String key) {
 		return parameterMap.get(key);
 	}
