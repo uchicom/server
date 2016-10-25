@@ -1,4 +1,4 @@
-/* (c) 2013 uchicom */
+// (c) 2013 uchicom
 package com.uchicom.server;
 
 import java.io.IOException;

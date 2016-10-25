@@ -1,4 +1,4 @@
-/* (c) 2016 uchicom */
+// (c) 2016 uchicom
 package com.uchicom.server;
 
 import java.io.IOException;
@@ -49,7 +49,7 @@ public abstract class AbstractSocketServer implements Server {
 		thread.start();
 		try (ServerSocket serverSocket = new ServerSocketFactory(parameter).createServerSocket();) {
 			serverSocket.setReuseAddress(true);
-			serverSocket.bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("backlog"));
+			serverSocket.bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("back"));
 			serverQueue.add(serverSocket);
 			execute(serverSocket);
 		} catch (Exception e) {

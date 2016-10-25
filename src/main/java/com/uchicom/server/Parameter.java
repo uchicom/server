@@ -1,4 +1,4 @@
-/* (c) 2014 uchicom */
+// (c) 2014 uchicom
 package com.uchicom.server;
 
 import java.io.File;
