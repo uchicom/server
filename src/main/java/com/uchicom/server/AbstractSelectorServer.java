@@ -40,7 +40,7 @@ public abstract class AbstractSelectorServer implements Server, Handler {
 
 		try (ServerSocketChannel server = ServerSocketChannel.open();) {
 			server.socket().setReuseAddress(true);
-			server.socket().bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("backlog"));
+			server.socket().bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("back"));
 			server.configureBlocking(false);
 			serverQueue.add(server);
 
