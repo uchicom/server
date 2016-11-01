@@ -7,18 +7,20 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * nio2を使用した抽象サーバクラス
+ * nio2を使用したサーバクラス
  *
  * @author uchicom: Shigeki Uchiyama
  *
  */
-public abstract class AbstractSelectorServer implements Server, Handler {
+public class SelectorServer implements Server, Handler {
 
 	protected static Queue<ServerSocketChannel> serverQueue = new ConcurrentLinkedQueue<ServerSocketChannel>();
 	protected Parameter parameter;
@@ -27,13 +29,15 @@ public abstract class AbstractSelectorServer implements Server, Handler {
 
 	protected HandlerFactory factory;
 
-	public AbstractSelectorServer(Parameter parameter, HandlerFactory factory) {
+	private static boolean alive = true;
+
+	public SelectorServer(Parameter parameter, HandlerFactory factory) {
 		this.parameter = parameter;
 		this.factory = factory;
 	}
 
 	/* (非 Javadoc)
-	 * @see com.uchicom.dirpop3.Server#execute()
+	 * @see com.uchicom.server.Server#execute()
 	 */
 	@Override
 	public void execute() {
@@ -54,7 +58,32 @@ public abstract class AbstractSelectorServer implements Server, Handler {
 		}
 	}
 
-	abstract protected void execute(Selector selector) throws IOException;
+	/**
+	 * メイン処理
+	 *
+	 */
+	protected void execute(Selector selector) throws IOException {
+		while (alive) {
+			if (selector.select() > 0) {
+				Set<SelectionKey> keys = selector.selectedKeys();
+				Iterator<SelectionKey> ite = keys.iterator();
+				while (ite.hasNext()) {
+					SelectionKey key = ite.next();
+					ite.remove();
+					try {
+						if (key.isValid()) {
+							((Handler) key.attachment()).handle(key);
+						} else {
+							key.cancel();
+						}
+					} catch (IOException e) {
+						e.printStackTrace();
+						key.cancel();
+					}
+				}
+			}
+		}
+	}
 
 	public static void shutdown(String[] args) {
 		if (!serverQueue.isEmpty()) {

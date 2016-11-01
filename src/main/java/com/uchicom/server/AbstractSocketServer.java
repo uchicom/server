@@ -17,12 +17,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public abstract class AbstractSocketServer implements Server {
 	protected Parameter parameter;
+	protected ServerProcessFactory factory;
 
 	protected List<ServerProcess> processList = new CopyOnWriteArrayList<ServerProcess>();
 	protected static Queue<ServerSocket> serverQueue = new ConcurrentLinkedQueue<ServerSocket>();
 
-	public AbstractSocketServer(Parameter parameter) {
+	public AbstractSocketServer(Parameter parameter, ServerProcessFactory factory) {
 		this.parameter = parameter;
+		this.factory = factory;
 	}
 
 	@Override
