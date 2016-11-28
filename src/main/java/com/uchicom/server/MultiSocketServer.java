@@ -20,6 +20,7 @@ public class MultiSocketServer extends AbstractSocketServer {
 			Thread thread = new Thread() {
 				public void run() {
 					process.execute();
+					processList.remove(process);
 				}
 			};
 			thread.setDaemon(true);
