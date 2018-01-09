@@ -9,6 +9,8 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import com.uchicom.util.Parameter;
+
 /**
  * ソケットを利用した抽象サーバ.
  *

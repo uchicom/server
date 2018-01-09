@@ -3,6 +3,8 @@ package com.uchicom.server;
 import java.io.IOException;
 import java.net.ServerSocket;
 
+import com.uchicom.util.Parameter;
+
 public class SingleSocketServer extends AbstractSocketServer {
 
 	public SingleSocketServer(Parameter parameter, ServerProcessFactory factory) {

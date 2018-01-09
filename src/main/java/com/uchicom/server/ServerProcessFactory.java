@@ -2,6 +2,8 @@ package com.uchicom.server;
 
 import java.net.Socket;
 
+import com.uchicom.util.Parameter;
+
 public interface ServerProcessFactory {
 
 	/**

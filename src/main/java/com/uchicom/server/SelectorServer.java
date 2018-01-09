@@ -14,6 +14,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import com.uchicom.util.Parameter;
+
 /**
  * nio2を使用したサーバクラス
  *
