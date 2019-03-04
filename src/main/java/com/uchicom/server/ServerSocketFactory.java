@@ -7,6 +7,7 @@ import java.security.KeyStore;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
 
 import com.uchicom.util.Parameter;
@@ -46,7 +47,8 @@ public class ServerSocketFactory {
 		sslContext.init(kmf.getKeyManagers(), null, null);
 
 		SSLServerSocketFactory ssf = sslContext.getServerSocketFactory();
-
-		return ssf.createServerSocket();
+		SSLServerSocket sslServerSocket = (SSLServerSocket)ssf.createServerSocket();
+		sslServerSocket.setEnabledProtocols(new String[] {"TLSv1.2"});
+		return sslServerSocket;
 	}
 }
