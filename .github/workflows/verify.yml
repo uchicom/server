@@ -1,0 +1,32 @@
+name: Verify
+
+on:
+  push:
+    branches:
+      - '**'
+      - '!main'
+      - '!release'
+  workflow_run:
+    workflows: [Release version, Development version]
+    types: [completed]
+
+jobs:
+  test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up JDK 20
+      uses: actions/setup-java@v2
+      with:
+        java-version: '20'
+        distribution: 'temurin'
+        cache: 'maven'
+    - name: Verify with Maven
+      run: mvn verify --file pom.xml
+    - name: Upload jacoco result
+      uses: actions/upload-artifact@v2
+      with:
+        name: jacoco
+        path: target/site/jacoco

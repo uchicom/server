@@ -1,0 +1,61 @@
+name: Create and publish a package
+
+on:
+  push:
+    branches: [ release ]
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up JDK 20
+      uses: actions/setup-java@v2
+      with:
+        java-version: '20'
+        distribution: 'temurin'
+        cache: 'maven'
+    - name: Build with Maven
+      run: mvn -B package --file pom.xml
+    - name: Create Tag name
+      id: project
+      run: |
+        echo ::set-output name=version::$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec)
+        echo ::set-output name=name::$(mvn -q -Dexec.executable=echo -Dexec.args='${project.name}' --non-recursive exec:exec)
+    - name: Create Tag
+      run: |
+        git tag ${{ steps.project.outputs.version }}
+        git push origin ${{ steps.project.outputs.version }}
+    - name: Create release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.project.outputs.version }}
+        release_name: Release v${{ steps.project.outputs.version }}
+        body: |
+          # Maven Central
+          https://search.maven.org/artifact/com.uchicom/${{ steps.project.outputs.name }}/${{ steps.project.outputs.version }}/jar
+          # Apache Maven
+          ```
+          <dependency>
+            <groupId>com.uchicom</groupId>
+            <artifactId>${{ steps.project.outputs.name }}</artifactId>
+            <version>${{ steps.project.outputs.version }}</version>
+          </dependency>
+          ```
+        draft: false
+        prerelease: false
+    - name: Upload Release Action
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./target/${{ steps.project.outputs.name }}-${{ steps.project.outputs.version }}.jar
+        asset_name: ${{ steps.project.outputs.name }}-${{ steps.project.outputs.version }}.jar
+        asset_content_type: application/java-archive
