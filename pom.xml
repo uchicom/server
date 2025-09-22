@@ -112,8 +112,8 @@
                 <include>*.md</include>
                 <include>.gitignore</include>
               </includes>
-              <trimTrailingWhitespace></trimTrailingWhitespace>
-              <endWithNewline></endWithNewline>
+              <trimTrailingWhitespace/>
+              <endWithNewline/>
               <indent>
                 <tabs>true</tabs>
                 <spacesPerTab>4</spacesPerTab>
@@ -125,10 +125,10 @@
               <include>src/main/java/**/*.java</include>
               <include>src/test/java/**/*.java</include>
             </includes>
-            <importOrder></importOrder>
-            <removeUnusedImports></removeUnusedImports>
+            <importOrder/>
+            <removeUnusedImports/>
             <googleJavaFormat>
-              <version>1.16.0</version>
+              <version>1.17.0</version>
               <style>GOOGLE</style>
             </googleJavaFormat>
             <licenseHeader>
@@ -140,7 +140,7 @@
             <includes>
               <include>pom.xml</include>
             </includes>
-            <sortPom></sortPom>
+            <sortPom/>
           </pom>
         </configuration>
         <executions>

@@ -10,6 +10,7 @@ public class MultiSocketServer extends AbstractSocketServer {
   public MultiSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
   }
+
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
