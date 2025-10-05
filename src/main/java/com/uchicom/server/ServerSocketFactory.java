@@ -45,7 +45,9 @@ public class ServerSocketFactory {
 
     SSLServerSocketFactory ssf = sslContext.getServerSocketFactory();
     SSLServerSocket sslServerSocket = (SSLServerSocket) ssf.createServerSocket();
-    sslServerSocket.setEnabledProtocols(new String[] {"TLSv1.2"});
+    if (parameter.is("sslProtocol")) {
+      sslServerSocket.setEnabledProtocols(parameter.get("sslProtocol").split(":", 0));
+    }
     return sslServerSocket;
   }
 }
