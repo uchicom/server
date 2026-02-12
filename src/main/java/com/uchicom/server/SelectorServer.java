@@ -30,7 +30,7 @@ public class SelectorServer implements Server, Handler {
 
   protected HandlerFactory factory;
 
-  private static boolean alive = true;
+  volatile boolean alive = true;
 
   public SelectorServer(Parameter parameter, HandlerFactory factory) {
     this.parameter = parameter;
@@ -101,5 +101,10 @@ public class SelectorServer implements Server, Handler {
       socketChannel.configureBlocking(false);
       socketChannel.register(key.selector(), SelectionKey.OP_READ, factory.createHandler());
     }
+  }
+
+  @Override
+  public void stop() {
+    alive = false;
   }
 }
