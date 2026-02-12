@@ -7,6 +7,8 @@ import java.net.ServerSocket;
 
 public class SingleSocketServer extends AbstractSocketServer {
 
+  volatile boolean alive = true;
+
   public SingleSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
   }
@@ -14,9 +16,14 @@ public class SingleSocketServer extends AbstractSocketServer {
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
-    while (true) {
+    while (alive) {
       ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
       process.execute();
     }
+  }
+
+  @Override
+  public void stop() {
+    alive = false;
   }
 }

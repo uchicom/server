@@ -11,6 +11,8 @@ public class PoolSocketServer extends AbstractSocketServer {
 
   protected ExecutorService exec = null;
 
+  volatile boolean alive = true;
+
   public PoolSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
     exec = Executors.newFixedThreadPool(parameter.getInt("pool"));
@@ -19,7 +21,7 @@ public class PoolSocketServer extends AbstractSocketServer {
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
-    while (true) {
+    while (alive) {
       final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
       exec.execute(
           new Runnable() {
@@ -29,5 +31,10 @@ public class PoolSocketServer extends AbstractSocketServer {
             }
           });
     }
+  }
+
+  @Override
+  public void stop() {
+    alive = false;
   }
 }
