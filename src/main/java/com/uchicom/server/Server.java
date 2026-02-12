@@ -10,4 +10,7 @@ public interface Server {
 
   /** サーバの処理. */
   public void execute();
+
+  /** サーバ停止. */
+  public void stop();
 }
