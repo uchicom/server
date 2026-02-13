@@ -7,8 +7,6 @@ import java.net.ServerSocket;
 
 public class MultiSocketServer extends AbstractSocketServer {
 
-  volatile boolean alive = true;
-
   public MultiSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
   }
@@ -29,10 +27,5 @@ public class MultiSocketServer extends AbstractSocketServer {
       thread.setDaemon(true);
       thread.start();
     }
-  }
-
-  @Override
-  public void stop() {
-    alive = false;
   }
 }

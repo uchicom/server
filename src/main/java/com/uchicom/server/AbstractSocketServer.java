@@ -6,8 +6,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -20,7 +18,8 @@ public abstract class AbstractSocketServer implements Server {
   protected ServerProcessFactory factory;
 
   protected List<ServerProcess> processList = new CopyOnWriteArrayList<ServerProcess>();
-  protected static Queue<ServerSocket> serverQueue = new ConcurrentLinkedQueue<ServerSocket>();
+  protected ServerSocket serverSocket;
+  volatile boolean alive = true;
 
   public AbstractSocketServer(Parameter parameter, ServerProcessFactory factory) {
     this.parameter = parameter;
@@ -33,7 +32,7 @@ public abstract class AbstractSocketServer implements Server {
     Thread thread =
         new Thread() {
           public void run() {
-            while (true) {
+            while (alive) {
               for (ServerProcess process : processList) {
                 if (System.currentTimeMillis() - process.getLastTime() > 10 * 1000) {
                   process.forceClose();
@@ -53,7 +52,7 @@ public abstract class AbstractSocketServer implements Server {
     try (ServerSocket serverSocket = new ServerSocketFactory(parameter).createServerSocket(); ) {
       serverSocket.setReuseAddress(true);
       serverSocket.bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("back"));
-      serverQueue.add(serverSocket);
+      this.serverSocket = serverSocket;
       execute(serverSocket);
     } catch (Exception e) {
       e.printStackTrace();
@@ -62,10 +61,12 @@ public abstract class AbstractSocketServer implements Server {
 
   protected abstract void execute(ServerSocket serverSocket) throws IOException;
 
-  public static void shutdown(String[] args) {
-    if (!serverQueue.isEmpty()) {
+  @Override
+  public void stop() {
+    alive = false;
+    if (serverSocket != null) {
       try {
-        serverQueue.poll().close();
+        serverSocket.close();
       } catch (IOException e) {
         e.printStackTrace();
       }
