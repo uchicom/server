@@ -11,8 +11,6 @@ public class PoolSocketServer extends AbstractSocketServer {
 
   protected ExecutorService exec = null;
 
-  volatile boolean alive = true;
-
   public PoolSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
     exec = Executors.newFixedThreadPool(parameter.getInt("pool"));
@@ -31,10 +29,5 @@ public class PoolSocketServer extends AbstractSocketServer {
             }
           });
     }
-  }
-
-  @Override
-  public void stop() {
-    alive = false;
   }
 }
