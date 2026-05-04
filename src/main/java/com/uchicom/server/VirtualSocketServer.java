@@ -1,4 +1,4 @@
-// (C) 2016 uchicom
+// (C) 2026 uchicom
 package com.uchicom.server;
 
 import com.uchicom.util.Parameter;
@@ -7,13 +7,13 @@ import java.net.ServerSocket;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public class PoolSocketServer extends AbstractSocketServer {
+public class VirtualSocketServer extends AbstractSocketServer {
 
   protected ExecutorService exec = null;
 
-  public PoolSocketServer(Parameter parameter, ServerProcessFactory factory) {
+  public VirtualSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
-    exec = Executors.newFixedThreadPool(parameter.getInt("pool"));
+    exec = Executors.newVirtualThreadPerTaskExecutor();
   }
 
   /** メイン処理 */
