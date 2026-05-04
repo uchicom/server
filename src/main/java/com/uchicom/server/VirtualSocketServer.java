@@ -1,4 +1,4 @@
-// (C) 2016 uchicom
+// (C) 2026 uchicom
 package com.uchicom.server;
 
 import com.uchicom.util.Parameter;
