@@ -16,12 +16,18 @@ public class VirtualSocketServer extends AbstractSocketServer {
     exec = Executors.newVirtualThreadPerTaskExecutor();
   }
 
+  @Override
+  public void stop() {
+    super.stop();
+    exec.shutdown();
+  }
+
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
       final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
-      exec.execute(process::execute);
+      exec.execute(() -> executeProcess(process));
     }
   }
 }

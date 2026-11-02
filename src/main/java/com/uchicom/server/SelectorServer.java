@@ -10,25 +10,26 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Queue;
 import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * nio2を使用したサーバクラス
  *
+ * <p>アイドルタイムアウトの対象外。接続ごとの{@link ServerProcess}がなく、{@link Handler}が非同期に処理を進めるため。
+ *
  * @author uchicom: Shigeki Uchiyama
  */
 public class SelectorServer implements Server, Handler {
 
-  protected static Queue<ServerSocketChannel> serverQueue =
-      new ConcurrentLinkedQueue<ServerSocketChannel>();
   protected Parameter parameter;
 
   protected List<ServerProcess> processList = new CopyOnWriteArrayList<ServerProcess>();
 
   protected HandlerFactory factory;
+
+  protected volatile ServerSocketChannel serverChannel;
+  protected volatile Selector selector;
 
   volatile boolean alive = true;
 
@@ -43,19 +44,36 @@ public class SelectorServer implements Server, Handler {
   @Override
   public void execute() {
 
-    try (ServerSocketChannel server = ServerSocketChannel.open(); ) {
+    try (ServerSocketChannel server = ServerSocketChannel.open();
+        Selector selector = Selector.open()) {
       server.socket().setReuseAddress(true);
       server
           .socket()
           .bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("back"));
       server.configureBlocking(false);
-      serverQueue.add(server);
-
-      Selector selector = Selector.open();
       server.register(selector, SelectionKey.OP_ACCEPT, this);
-      execute(selector);
+      serverChannel = server;
+      this.selector = selector;
+      try {
+        execute(selector);
+      } finally {
+        closeChannels(selector);
+      }
     } catch (IOException e) {
       e.printStackTrace();
+    } finally {
+      alive = false;
+    }
+  }
+
+  /** セレクタに登録されているチャンネル(サーバ・接続済み)をすべて閉じます. */
+  protected void closeChannels(Selector selector) {
+    for (SelectionKey key : selector.keys()) {
+      try {
+        key.channel().close();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
     }
   }
 
@@ -83,21 +101,15 @@ public class SelectorServer implements Server, Handler {
     }
   }
 
-  public static void shutdown(String[] args) {
-    if (!serverQueue.isEmpty()) {
-      try {
-        serverQueue.poll().close();
-      } catch (IOException e) {
-        e.printStackTrace();
-      }
-    }
-  }
-
   @Override
   public void handle(SelectionKey key) throws IOException {
     if (key.isAcceptable()) {
       // サーバーの受付処理。
       SocketChannel socketChannel = ((ServerSocketChannel) key.channel()).accept();
+      if (socketChannel == null) {
+        // 保留中の接続がない(select後にクライアントが取り消した場合など)
+        return;
+      }
       socketChannel.configureBlocking(false);
       socketChannel.register(key.selector(), SelectionKey.OP_READ, factory.createHandler());
     }
@@ -106,5 +118,10 @@ public class SelectorServer implements Server, Handler {
   @Override
   public void stop() {
     alive = false;
+    Selector selector = this.selector;
+    if (selector != null) {
+      // select()でブロック中のループを起こして終了させる
+      selector.wakeup();
+    }
   }
 }

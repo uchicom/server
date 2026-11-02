@@ -5,6 +5,7 @@ import com.uchicom.util.Parameter;
 import java.io.FileInputStream;
 import java.net.ServerSocket;
 import java.security.KeyStore;
+import java.security.SecureRandom;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
@@ -16,6 +17,10 @@ import javax.net.ssl.SSLServerSocketFactory;
  * @author uchicom: Shigeki Uchiyama
  */
 public class ServerSocketFactory {
+  static final String DEFAULT_KEY_STORE_TYPE = "PKCS12";
+  static final String DEFAULT_PROTOCOL = "TLS";
+  static final String DEFAULT_SSL_PROTOCOL = "TLSv1.3:TLSv1.2";
+
   protected Parameter parameter;
 
   public ServerSocketFactory(Parameter parameter) {
@@ -33,21 +38,36 @@ public class ServerSocketFactory {
   private ServerSocket createSSLServerSocket() throws Exception {
 
     // パスワード
-    char[] pass = parameter.get("keyStorePass").toCharArray();
+    char[] pass = getRequired("keyStorePass").toCharArray();
+    String keyStoreName = getRequired("keyStoreName");
     // キーストアのロード
-    KeyStore ks = KeyStore.getInstance(parameter.get("keyStoreType"));
-    ks.load(new FileInputStream(parameter.get("keyStoreName")), pass);
-    KeyManagerFactory kmf = KeyManagerFactory.getInstance(parameter.get("algorithm"));
+    KeyStore ks = KeyStore.getInstance(getOrDefault("keyStoreType", DEFAULT_KEY_STORE_TYPE));
+    try (FileInputStream fis = new FileInputStream(keyStoreName)) {
+      ks.load(fis, pass);
+    }
+    KeyManagerFactory kmf =
+        KeyManagerFactory.getInstance(
+            getOrDefault("algorithm", KeyManagerFactory.getDefaultAlgorithm()));
     kmf.init(ks, pass);
 
-    SSLContext sslContext = SSLContext.getInstance(parameter.get("protocol"));
-    sslContext.init(kmf.getKeyManagers(), null, null);
+    SSLContext sslContext = SSLContext.getInstance(getOrDefault("protocol", DEFAULT_PROTOCOL));
+    sslContext.init(kmf.getKeyManagers(), null, new SecureRandom());
 
     SSLServerSocketFactory ssf = sslContext.getServerSocketFactory();
     SSLServerSocket sslServerSocket = (SSLServerSocket) ssf.createServerSocket();
-    if (parameter.is("sslProtocol")) {
-      sslServerSocket.setEnabledProtocols(parameter.get("sslProtocol").split(":", 0));
-    }
+    sslServerSocket.setEnabledProtocols(
+        getOrDefault("sslProtocol", DEFAULT_SSL_PROTOCOL).split(":", 0));
     return sslServerSocket;
+  }
+
+  private String getRequired(String key) {
+    if (!parameter.is(key)) {
+      throw new IllegalArgumentException("SSL設定に必須のキーが指定されていません: " + key);
+    }
+    return parameter.get(key);
+  }
+
+  private String getOrDefault(String key, String defaultValue) {
+    return parameter.is(key) ? parameter.get(key) : defaultValue;
   }
 }
