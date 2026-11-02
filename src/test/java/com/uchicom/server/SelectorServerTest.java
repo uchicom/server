@@ -3,6 +3,7 @@ package com.uchicom.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,6 +11,7 @@ import com.uchicom.util.Parameter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
@@ -255,6 +257,28 @@ class SelectorServerTest {
       pipe1.sink().close();
       pipe2.source().close();
       pipe2.sink().close();
+    }
+  }
+
+  @Test
+  void handleIgnoresNullAccept() throws Exception {
+    SelectorServer selectorServer = newServer();
+    try (ServerSocketChannel channel = ServerSocketChannel.open();
+        Selector selector = Selector.open()) {
+      channel.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+      channel.configureBlocking(false);
+      SelectionKey key = channel.register(selector, SelectionKey.OP_ACCEPT);
+      try (Socket socket =
+          new Socket(InetAddress.getLoopbackAddress(), channel.socket().getLocalPort())) {
+        assertEquals(1, selector.select(5000));
+        // acceptableの通知後に保留中の接続が無くなった状態にする
+        try (SocketChannel accepted = channel.accept()) {
+          assertTrue(key.isAcceptable());
+          assertNull(channel.accept());
+          selectorServer.handle(key);
+          assertEquals(1, selector.keys().size());
+        }
+      }
     }
   }
 
