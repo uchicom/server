@@ -16,6 +16,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * nio2を使用したサーバクラス
  *
+ * <p>アイドルタイムアウトの対象外。接続ごとの{@link ServerProcess}がなく、{@link Handler}が非同期に処理を進めるため。
+ *
  * @author uchicom: Shigeki Uchiyama
  */
 public class SelectorServer implements Server, Handler {

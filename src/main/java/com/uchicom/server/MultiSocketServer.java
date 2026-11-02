@@ -16,12 +16,10 @@ public class MultiSocketServer extends AbstractSocketServer {
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
       final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
-      processList.add(process);
       Thread thread =
           new Thread() {
             public void run() {
-              process.execute();
-              processList.remove(process);
+              executeProcess(process);
             }
           };
       thread.setDaemon(true);

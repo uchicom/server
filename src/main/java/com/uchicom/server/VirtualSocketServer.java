@@ -27,7 +27,7 @@ public class VirtualSocketServer extends AbstractSocketServer {
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
       final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
-      exec.execute(process::execute);
+      exec.execute(() -> executeProcess(process));
     }
   }
 }
