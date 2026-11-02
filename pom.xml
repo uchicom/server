@@ -51,6 +51,12 @@
       <artifactId>util</artifactId>
       <version>1.6.5</version>
     </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>6.0.3</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <plugins>
@@ -205,12 +211,12 @@
                         <limit>
                           <counter>LINE</counter>
                           <value>COVEREDRATIO</value>
-                          <minimum>0</minimum>
+                          <minimum>0.80</minimum>
                         </limit>
                         <limit>
                           <counter>BRANCH</counter>
                           <value>COVEREDRATIO</value>
-                          <minimum>0</minimum>
+                          <minimum>0.80</minimum>
                         </limit>
                       </limits>
                     </rule>
