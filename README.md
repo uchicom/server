@@ -6,6 +6,122 @@ server
 [![Maven Central](https://img.shields.io/github/license/uchicom/server.svg)](http://www.apache.org/licenses/LICENSE-2.0.txt)
 いろいろなサーバプログラムの基本となる抽象サーバ
 
+導入方法
+-----------------
+
+Java 25 以上が必要です。Maven Central で公開しています。
+
+```xml
+<dependency>
+<groupId>com.uchicom</groupId>
+<artifactId>server</artifactId>
+<version>0.3.0</version>
+</dependency>
+```
+
+最小の実装例
+-----------------
+
+接続ごとの処理を `ServerProcess` で実装し、`ServerProcessFactory` で生成して、`Server` を起動します。
+
+```java
+import com.uchicom.server.MultiSocketServer;
+import com.uchicom.server.ServerProcess;
+import com.uchicom.util.Parameter;
+import java.io.IOException;
+import java.net.Socket;
+
+public class EchoMain {
+
+public static void main(String[] args) {
+	// port, back は必須
+	Parameter parameter = new Parameter(args);
+	new MultiSocketServer(parameter, (param, socket) -> new EchoProcess(socket)).execute();
+}
+
+static class EchoProcess implements ServerProcess {
+	private final Socket socket;
+	private volatile long lastTime = System.currentTimeMillis();
+
+	EchoProcess(Socket socket) {
+	this.socket = socket;
+	}
+
+	@Override
+	public long getLastTime() {
+	return lastTime;
+	}
+
+	@Override
+	public void forceClose() {
+	try {
+		socket.close();
+	} catch (IOException e) {
+		e.printStackTrace();
+	}
+	}
+
+	@Override
+	public void execute() {
+	try (socket) {
+		var in = socket.getInputStream();
+		var out = socket.getOutputStream();
+		int b;
+		while ((b = in.read()) != -1) {
+		lastTime = System.currentTimeMillis();
+		out.write(b);
+		out.flush();
+		}
+	} catch (IOException e) {
+		// forceClose による切断も含む
+	}
+	}
+}
+}
+```
+
+`java EchoMain -port 8080 -back 50` のように起動します(`Parameter` は `com.uchicom.util` のライブラリで、`-キー 値` 形式の引数を解釈します)。
+`execute()` は呼び出したスレッドをブロックし、別スレッドから `stop()` を呼ぶと停止します。
+
+`ServerProcess#getLastTime()` は最終アクセス時刻(ミリ秒)を返します。アイドルタイムアウトの判定に使われるため、通信のたびに更新してください。
+
+Parameter のキー一覧
+-----------------
+
+| キー | 必須 | 意味 |
+|---|---|---|
+| `port` | 必須 | 待ち受けるポート番号 |
+| `back` | 必須 | 接続待ちキュー(backlog)の最大長 |
+| `pool` | `PoolSocketServer` のみ必須 | スレッドプールのスレッド数 |
+| `timeout` | 任意 | アイドルタイムアウト(ミリ秒)。未指定時は10000 |
+| `ssl` | 任意 | 指定するとSSL(TLS)で待ち受ける。以下のキーが必要 |
+| `keyStorePass` | `ssl` 時に必須 | キーストアのパスワード |
+| `keyStoreType` | `ssl` 時に必須 | キーストアの種類(例: `JKS`、`PKCS12`) |
+| `keyStoreName` | `ssl` 時に必須 | キーストアのファイルパス |
+| `algorithm` | `ssl` 時に必須 | `KeyManagerFactory` のアルゴリズム(例: `SunX509`) |
+| `protocol` | `ssl` 時に必須 | `SSLContext` のプロトコル(例: `TLS`) |
+| `sslProtocol` | 任意 | 有効にする SSL プロトコル。複数指定は `:` 区切り(例: `TLSv1.2:TLSv1.3`) |
+
+`SelectorServer` が使用するのは `port` と `back` のみです(SSL は非対応)。
+
+Server の種類
+-----------------
+
+| Server | 処理方式 | 用途・特徴 |
+|---|---|---|
+| `SingleSocketServer` | 受付スレッドで1接続ずつ順番に処理 | 同時接続を1つに限定したい場合。処理中は他の接続が待たされる |
+| `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。接続数に上限がなく、多数接続ではスレッドが増える |
+| `PoolSocketServer` | `pool` 個の固定スレッドプールで処理 | 同時処理数を制限したい場合。`pool` を超える接続はプールの空きを待つ |
+| `VirtualSocketServer` | 接続ごとに仮想スレッドを生成 | 多数の接続をブロッキング I/O で扱いたい場合 |
+| `SelectorServer` | NIO の `Selector` で単一スレッドが多重化 | `ServerProcessFactory` ではなく `HandlerFactory` / `Handler` を実装する |
+
+### 停止の挙動
+
+- `stop()` は `alive` を false にし、サーバソケットを閉じて `accept()` を中断させます。`execute()` はその後に戻ります。
+- `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdown()` を呼びます。処理中の接続は終了まで継続されます。
+- `MultiSocketServer` の接続スレッドはデーモンスレッドのため、他にスレッドがなければ JVM の終了とともに破棄されます。
+- `SelectorServer` は `Selector#wakeup()` でループを終了し、登録済みのチャンネルをすべて閉じます。
+
 アイドルタイムアウト
 -----------------
 
