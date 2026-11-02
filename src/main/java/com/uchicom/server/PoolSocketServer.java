@@ -16,6 +16,12 @@ public class PoolSocketServer extends AbstractSocketServer {
     exec = Executors.newFixedThreadPool(parameter.getInt("pool"));
   }
 
+  @Override
+  public void stop() {
+    super.stop();
+    exec.shutdown();
+  }
+
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {

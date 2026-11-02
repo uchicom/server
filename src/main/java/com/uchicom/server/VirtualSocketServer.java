@@ -16,6 +16,12 @@ public class VirtualSocketServer extends AbstractSocketServer {
     exec = Executors.newVirtualThreadPerTaskExecutor();
   }
 
+  @Override
+  public void stop() {
+    super.stop();
+    exec.shutdown();
+  }
+
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
