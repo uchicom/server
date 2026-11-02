@@ -15,19 +15,18 @@ import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLServerSocket;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class ServerSocketFactoryTest {
 
   static final String PASS = "changeit";
 
-  static Path dir;
+  @TempDir static Path dir;
   static Path keyStore;
 
   @BeforeAll
   static void createKeyStore() throws Exception {
-    dir = Files.createDirectories(Path.of("target", "test-keystore"));
     keyStore = dir.resolve("test.p12");
-    Files.deleteIfExists(keyStore);
     String keytool =
         Path.of(System.getProperty("java.home"), "bin", "keytool").toAbsolutePath().toString();
     Process process =

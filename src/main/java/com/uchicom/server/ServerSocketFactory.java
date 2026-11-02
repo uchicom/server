@@ -36,7 +36,9 @@ public class ServerSocketFactory {
     char[] pass = parameter.get("keyStorePass").toCharArray();
     // キーストアのロード
     KeyStore ks = KeyStore.getInstance(parameter.get("keyStoreType"));
-    ks.load(new FileInputStream(parameter.get("keyStoreName")), pass);
+    try (FileInputStream fis = new FileInputStream(parameter.get("keyStoreName"))) {
+      ks.load(fis, pass);
+    }
     KeyManagerFactory kmf = KeyManagerFactory.getInstance(parameter.get("algorithm"));
     kmf.init(ks, pass);
 
