@@ -106,6 +106,10 @@ public class SelectorServer implements Server, Handler {
     if (key.isAcceptable()) {
       // サーバーの受付処理。
       SocketChannel socketChannel = ((ServerSocketChannel) key.channel()).accept();
+      if (socketChannel == null) {
+        // 保留中の接続がない(select後にクライアントが取り消した場合など)
+        return;
+      }
       socketChannel.configureBlocking(false);
       socketChannel.register(key.selector(), SelectionKey.OP_READ, factory.createHandler());
     }
