@@ -94,13 +94,15 @@ Parameter のキー一覧
 | `back` | 必須 | 接続待ちキュー(backlog)の最大長 |
 | `pool` | `PoolSocketServer` のみ必須 | スレッドプールのスレッド数 |
 | `timeout` | 任意 | アイドルタイムアウト(ミリ秒)。未指定時は10000 |
-| `ssl` | 任意 | 指定するとSSL(TLS)で待ち受ける。以下のキーが必要 |
-| `keyStorePass` | `ssl` 時に必須 | キーストアのパスワード |
-| `keyStoreType` | `ssl` 時に必須 | キーストアの種類(例: `JKS`、`PKCS12`) |
-| `keyStoreName` | `ssl` 時に必須 | キーストアのファイルパス |
-| `algorithm` | `ssl` 時に必須 | `KeyManagerFactory` のアルゴリズム(例: `SunX509`) |
-| `protocol` | `ssl` 時に必須 | `SSLContext` のプロトコル(例: `TLS`) |
-| `sslProtocol` | 任意 | 有効にする SSL プロトコル。複数指定は `:` 区切り(例: `TLSv1.2:TLSv1.3`) |
+| `ssl` | 任意 | 指定するとSSL(TLS)で待ち受ける。以下のキーを使用する |
+| `keyStorePass` | `ssl` 時に必須 | キーストアのパスワード。未指定だとエラー |
+| `keyStoreName` | `ssl` 時に必須 | キーストアのファイルパス。未指定だとエラー |
+| `keyStoreType` | 任意 | キーストアの種類(例: `JKS`、`PKCS12`)。既定は `PKCS12` |
+| `algorithm` | 任意 | `KeyManagerFactory` のアルゴリズム。既定は `KeyManagerFactory.getDefaultAlgorithm()` |
+| `protocol` | 任意 | `SSLContext` のプロトコル。既定は `TLS` |
+| `sslProtocol` | 任意 | 有効にする SSL プロトコル。複数指定は `:` 区切り。既定は `TLSv1.3:TLSv1.2` |
+
+SSL は `ssl`、`keyStoreName`、`keyStorePass` だけで有効にできます。`sslProtocol` を指定すると既定の有効プロトコルを上書きします。
 
 `SelectorServer` が使用するのは `port` と `back` のみです(SSL は非対応)。
 
