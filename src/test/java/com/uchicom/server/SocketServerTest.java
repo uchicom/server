@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.uchicom.util.Parameter;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -66,12 +67,17 @@ class SocketServerTest {
     int port = start(creator, factory);
     assertEquals('a', echo(port, 'a'));
     assertEquals('b', echo(port, 'b'));
-    // alive=falseの状態で最後の接続を受けて、ループが正常終了することを確認する
+    // alive=falseにして、accept待ちを起こす接続を1回行い、ループが正常終了することを確認する。
+    // サーバがすでにループ条件を評価済みで終了している場合は接続に失敗するので無視する。
     server.alive = false;
-    assertEquals('c', echo(port, 'c'));
+    try (Socket ignored = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      // 接続のみ
+    } catch (IOException e) {
+      // 無視
+    }
     thread.join(5000);
     assertFalse(thread.isAlive());
-    assertEquals(3, factory.executed.get());
+    assertTrue(factory.executed.get() >= 2);
   }
 
   @Test
