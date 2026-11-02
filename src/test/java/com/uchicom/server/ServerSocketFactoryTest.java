@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.uchicom.util.Parameter;
 import java.net.ServerSocket;
@@ -68,6 +69,18 @@ class ServerSocketFactoryTest {
     return parameter;
   }
 
+  Parameter sslParameterWithout(String key) {
+    Parameter parameter = new Parameter(new String[0]);
+    parameter.put("ssl", "true");
+    if (!"keyStorePass".equals(key)) {
+      parameter.put("keyStorePass", PASS);
+    }
+    if (!"keyStoreName".equals(key)) {
+      parameter.put("keyStoreName", keyStore.toString());
+    }
+    return parameter;
+  }
+
   @Test
   void createPlainServerSocket() throws Exception {
     Parameter parameter = new Parameter(new String[0]);
@@ -91,6 +104,38 @@ class ServerSocketFactoryTest {
       assertArrayEquals(
           new String[] {"TLSv1.2", "TLSv1.3"}, ((SSLServerSocket) socket).getEnabledProtocols());
     }
+  }
+
+  @Test
+  void createSSLServerSocketMinimal() throws Exception {
+    Parameter parameter = new Parameter(new String[0]);
+    parameter.put("ssl", "true");
+    parameter.put("keyStorePass", PASS);
+    parameter.put("keyStoreName", keyStore.toString());
+    try (ServerSocket socket = new ServerSocketFactory(parameter).createServerSocket()) {
+      assertArrayEquals(
+          new String[] {"TLSv1.3", "TLSv1.2"}, ((SSLServerSocket) socket).getEnabledProtocols());
+    }
+  }
+
+  @Test
+  void missingKeyStoreNameFails() {
+    Parameter parameter = sslParameterWithout("keyStoreName");
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new ServerSocketFactory(parameter).createServerSocket());
+    assertTrue(e.getMessage().contains("keyStoreName"));
+  }
+
+  @Test
+  void missingKeyStorePassFails() {
+    Parameter parameter = sslParameterWithout("keyStorePass");
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new ServerSocketFactory(parameter).createServerSocket());
+    assertTrue(e.getMessage().contains("keyStorePass"));
   }
 
   @Test
