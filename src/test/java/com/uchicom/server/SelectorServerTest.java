@@ -3,6 +3,8 @@ package com.uchicom.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.uchicom.util.Parameter;
 import java.io.IOException;
@@ -13,7 +15,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -21,35 +26,50 @@ class SelectorServerTest {
 
   SelectorServer server;
   Thread thread;
+  final List<SelectorServer> servers = new ArrayList<>();
+  final List<Thread> threads = new ArrayList<>();
 
   @AfterEach
-  void tearDown() {
-    SelectorServer.shutdown(null);
-    SelectorServer.serverQueue.clear();
+  void tearDown() throws Exception {
+    for (SelectorServer started : servers) {
+      started.stop();
+    }
+    for (Thread started : threads) {
+      started.join(5000);
+    }
   }
 
-  int start(HandlerFactory factory) throws Exception {
-    SelectorServer.serverQueue.clear();
+  SelectorServer startServer(HandlerFactory factory) throws Exception {
     Parameter parameter = new Parameter(new String[0]);
     parameter.put("port", "0");
     parameter.put("back", "50");
-    server = new SelectorServer(parameter, factory);
-    thread = new Thread(server::execute);
-    thread.setDaemon(true);
-    thread.start();
-    for (int i = 0; i < 500 && SelectorServer.serverQueue.isEmpty(); i++) {
+    SelectorServer selectorServer = new SelectorServer(parameter, factory);
+    Thread selectorThread = new Thread(selectorServer::execute);
+    selectorThread.setDaemon(true);
+    selectorThread.start();
+    servers.add(selectorServer);
+    threads.add(selectorThread);
+    for (int i = 0; i < 500 && selectorServer.selector == null; i++) {
       Thread.sleep(10);
     }
-    return SelectorServer.serverQueue.peek().socket().getLocalPort();
+    server = selectorServer;
+    thread = selectorThread;
+    return selectorServer;
   }
 
-  /** stop後に接続してselectを起こし、ループを終了させる. */
+  int start(HandlerFactory factory) throws Exception {
+    return startServer(factory).serverChannel.socket().getLocalPort();
+  }
+
+  /** stopだけでループが終了し、チャンネルとセレクタが閉じられることを確認する. */
   void stopServer(int port) throws Exception {
+    ServerSocketChannel channel = server.serverChannel;
+    Selector selector = server.selector;
     server.stop();
-    try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
-      thread.join(5000);
-    }
+    thread.join(5000);
     assertFalse(thread.isAlive());
+    assertFalse(channel.isOpen());
+    assertFalse(selector.isOpen());
   }
 
   static Handler echoHandler() {
@@ -113,13 +133,74 @@ class SelectorServerTest {
   }
 
   @Test
-  void shutdownClosesServerChannel() throws Exception {
+  void stopClosesConnectedChannels() throws Exception {
+    int port = start(() -> echoHandler());
+    try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      socket.setSoTimeout(5000);
+      socket.getOutputStream().write('x');
+      socket.getOutputStream().flush();
+      assertEquals('x', socket.getInputStream().read());
+      stopServer(port);
+      // サーバ側の接続済みチャンネルも閉じられるので、EOFが返る
+      assertEquals(-1, socket.getInputStream().read());
+    }
+  }
+
+  @Test
+  void stopBeforeExecute() throws Exception {
+    SelectorServer selectorServer = newServer();
+    selectorServer.stop();
+    assertFalse(selectorServer.alive);
+    // stopを先に呼んでいてもexecuteはすぐ戻る
+    selectorServer.parameter.put("port", "0");
+    selectorServer.parameter.put("back", "50");
+    Thread selectorThread = new Thread(selectorServer::execute);
+    selectorThread.setDaemon(true);
+    selectorThread.start();
+    selectorThread.join(5000);
+    assertFalse(selectorThread.isAlive());
+    assertFalse(selectorServer.serverChannel.isOpen());
+  }
+
+  @Test
+  void stopTwiceIsHarmless() throws Exception {
     start(() -> echoHandler());
-    assertEquals(1, SelectorServer.serverQueue.size());
-    SelectorServer.shutdown(null);
-    assertEquals(0, SelectorServer.serverQueue.size());
-    // キューが空でも例外にならない
-    SelectorServer.shutdown(null);
+    server.stop();
+    thread.join(5000);
+    assertFalse(thread.isAlive());
+    // 終了後のstopでも例外にならない
+    server.stop();
+  }
+
+  @Test
+  void instancesStopIndependently() throws Exception {
+    SelectorServer first = startServer(() -> echoHandler());
+    int firstPort = first.serverChannel.socket().getLocalPort();
+    Thread firstThread = thread;
+    SelectorServer second = startServer(() -> echoHandler());
+    int secondPort = second.serverChannel.socket().getLocalPort();
+    Thread secondThread = thread;
+
+    first.stop();
+    firstThread.join(5000);
+    assertFalse(firstThread.isAlive());
+    assertFalse(first.serverChannel.isOpen());
+
+    // 一方を止めても、もう一方は動き続ける
+    assertTrue(secondThread.isAlive());
+    assertTrue(second.serverChannel.isOpen());
+    try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), secondPort)) {
+      socket.setSoTimeout(5000);
+      socket.getOutputStream().write('z');
+      socket.getOutputStream().flush();
+      assertEquals('z', socket.getInputStream().read());
+    }
+    assertThrows(
+        IOException.class, () -> new Socket(InetAddress.getLoopbackAddress(), firstPort).close());
+
+    server = second;
+    thread = secondThread;
+    stopServer(secondPort);
   }
 
   SelectorServer newServer() {

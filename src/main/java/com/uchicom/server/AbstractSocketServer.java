@@ -18,7 +18,8 @@ public abstract class AbstractSocketServer implements Server {
   protected ServerProcessFactory factory;
 
   protected List<ServerProcess> processList = new CopyOnWriteArrayList<ServerProcess>();
-  protected ServerSocket serverSocket;
+  protected volatile ServerSocket serverSocket;
+  protected volatile Thread monitor;
   volatile boolean alive = true;
 
   public AbstractSocketServer(Parameter parameter, ServerProcessFactory factory) {
@@ -42,12 +43,14 @@ public abstract class AbstractSocketServer implements Server {
               try {
                 Thread.sleep(1000);
               } catch (InterruptedException e) {
-                e.printStackTrace();
+                // stopによる終了要求
+                return;
               }
             }
           }
         };
     thread.setDaemon(true);
+    monitor = thread;
     thread.start();
     try (ServerSocket serverSocket = new ServerSocketFactory(parameter).createServerSocket(); ) {
       serverSocket.setReuseAddress(true);
@@ -55,7 +58,13 @@ public abstract class AbstractSocketServer implements Server {
       this.serverSocket = serverSocket;
       execute(serverSocket);
     } catch (Exception e) {
-      e.printStackTrace();
+      // stopによるソケットクローズで発生する例外は正常終了として扱う
+      if (alive) {
+        e.printStackTrace();
+      }
+    } finally {
+      // 異常終了した場合も含めて、監視スレッドなどの後始末を行う
+      stop();
     }
   }
 
@@ -64,6 +73,10 @@ public abstract class AbstractSocketServer implements Server {
   @Override
   public void stop() {
     alive = false;
+    Thread monitor = this.monitor;
+    if (monitor != null) {
+      monitor.interrupt();
+    }
     if (serverSocket != null) {
       try {
         serverSocket.close();
