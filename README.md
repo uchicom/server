@@ -104,8 +104,6 @@ Parameter のキー一覧
 
 SSL は `ssl`、`keyStoreName`、`keyStorePass` だけで有効にできます。`sslProtocol` を指定すると既定の有効プロトコルを上書きします。
 
-`SelectorServer` が使用するのは `port` と `back` のみです(SSL は非対応)。
-
 Server の種類
 -----------------
 
@@ -115,14 +113,12 @@ Server の種類
 | `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。接続数に上限がなく、多数接続ではスレッドが増える |
 | `PoolSocketServer` | `pool` 個の固定スレッドプールで処理 | 同時処理数を制限したい場合。`pool` を超える接続はプールの空きを待つ |
 | `VirtualSocketServer` | 接続ごとに仮想スレッドを生成 | 多数の接続をブロッキング I/O で扱いたい場合 |
-| `SelectorServer` | NIO の `Selector` で単一スレッドが多重化 | `ServerProcessFactory` ではなく `HandlerFactory` / `Handler` を実装する |
 
 ### 停止の挙動
 
 - `stop()` は `alive` を false にし、サーバソケットを閉じて `accept()` を中断させます。`execute()` はその後に戻ります。
 - `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdown()` を呼びます。処理中の接続は終了まで継続されます。
 - `MultiSocketServer` の接続スレッドはデーモンスレッドのため、他にスレッドがなければ JVM の終了とともに破棄されます。
-- `SelectorServer` は `Selector#wakeup()` でループを終了し、登録済みのチャンネルをすべて閉じます。
 
 アイドルタイムアウト
 -----------------
@@ -136,6 +132,3 @@ Server の種類
 | MultiSocketServer | 対象 |
 | PoolSocketServer | 対象 |
 | VirtualSocketServer | 対象 |
-| SelectorServer | **対象外** |
-
-`SelectorServer` は接続ごとの `ServerProcess` がなく、`Handler` が非同期に処理を進めるため、アイドル判定の対象外です。

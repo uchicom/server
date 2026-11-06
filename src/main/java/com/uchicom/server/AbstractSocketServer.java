@@ -13,8 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>アイドルタイムアウト: 最終アクセスからparameterの"timeout"(ミリ秒、未指定時は10000)を超えた接続は、 監視スレッドが{@link
  * ServerProcess#forceClose()}で強制クローズする。 {@link SingleSocketServer}、{@link MultiSocketServer}、{@link
- * PoolSocketServer}、{@link VirtualSocketServer}が対象。 {@link SelectorServer}は接続ごとの{@link
- * ServerProcess}を持たないため対象外。
+ * PoolSocketServer}、{@link VirtualSocketServer}が対象。
  *
  * @author uchicom: Shigeki Uchiyama
  */
