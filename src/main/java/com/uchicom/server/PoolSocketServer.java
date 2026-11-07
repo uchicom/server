@@ -27,7 +27,8 @@ public class PoolSocketServer extends AbstractSocketServer {
   @Override
   public void stop() {
     super.stop();
-    exec.shutdownNow();
+    // 未着手のまま破棄されたタスクは processList に未登録のため、ここで閉じる
+    forceCloseDiscarded(exec.shutdownNow());
   }
 
   /** メイン処理 */
@@ -38,7 +39,7 @@ public class PoolSocketServer extends AbstractSocketServer {
       if (process == null) {
         continue;
       }
-      exec.execute(() -> executeProcess(process));
+      exec.execute(new ProcessTask(process));
     }
   }
 }

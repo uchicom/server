@@ -414,6 +414,72 @@ class SocketServerTest {
     assertStopForceClosesRemaining(VirtualSocketServer::new);
   }
 
+  /** poolを超えて未着手のまま待たされている接続が、stop()でshutdownNow()に破棄されても強制クローズされることを確認する. */
+  @Test
+  void poolStopForceClosesQueued() throws Exception {
+    int pool = 2;
+    int total = pool + 1;
+    CountDownLatch executing = new CountDownLatch(pool);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch allClosed = new CountDownLatch(total);
+    java.util.Set<ServerProcess> closed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    java.util.Set<ServerProcess> started = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    ServerProcessFactory factory =
+        (parameter, socket) ->
+            new ServerProcess() {
+              @Override
+              public long getLastTime() {
+                return System.currentTimeMillis();
+              }
+
+              @Override
+              public void forceClose() {
+                closed.add(this);
+                release.countDown();
+                allClosed.countDown();
+              }
+
+              @Override
+              public void execute() {
+                started.add(this);
+                executing.countDown();
+                try {
+                  release.await();
+                } catch (InterruptedException e) {
+                  // shutdownNowによる割り込み
+                }
+              }
+            };
+    Parameter parameter = parameter();
+    parameter.put("pool", String.valueOf(pool));
+    parameter.put("timeout", "600000");
+    server = new PoolSocketServer(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    java.util.List<Socket> sockets = new java.util.ArrayList<>();
+    try {
+      for (int i = 0; i < total; i++) {
+        sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+      }
+      assertTrue(executing.await(10, TimeUnit.SECONDS));
+      // 3つ目がacceptされてキューに入るのを待つ
+      Thread.sleep(500);
+      assertEquals(pool, started.size());
+      server.stop();
+      assertTrue(allClosed.await(10, TimeUnit.SECONDS));
+      assertEquals(total, closed.size());
+    } finally {
+      for (Socket s : sockets) {
+        s.close();
+      }
+    }
+  }
+
   /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
   @Test
   void forceCloseExceptionContinuesMonitoring() throws Exception {

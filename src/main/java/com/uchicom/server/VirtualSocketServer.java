@@ -19,7 +19,7 @@ public class VirtualSocketServer extends AbstractSocketServer {
   @Override
   public void stop() {
     super.stop();
-    exec.shutdownNow();
+    forceCloseDiscarded(exec.shutdownNow());
   }
 
   /** メイン処理 */
@@ -30,7 +30,7 @@ public class VirtualSocketServer extends AbstractSocketServer {
       if (process == null) {
         continue;
       }
-      exec.execute(() -> executeProcess(process));
+      exec.execute(new ProcessTask(process));
     }
   }
 }
