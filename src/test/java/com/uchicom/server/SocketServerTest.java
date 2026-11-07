@@ -160,36 +160,131 @@ class SocketServerTest {
   /** createServerProcessが例外を投げても、サーバが継続して次の接続を処理し、acceptしたソケットがcloseされることを確認する. */
   void assertCreateFailureContinues(
       BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
-    PrintStream originalErr = System.err;
-    ByteArrayOutputStream err = new ByteArrayOutputStream();
-    System.setErr(new PrintStream(err, true));
-    try {
-      AtomicInteger count = new AtomicInteger();
-      TestServerProcessFactory echo = new TestServerProcessFactory();
-      int port =
-          start(
-              creator,
-              (parameter, socket) -> {
-                if (count.getAndIncrement() == 0) {
-                  throw new IllegalStateException("boom");
-                }
-                return echo.createServerProcess(parameter, socket);
-              });
-      try (Socket failed = new Socket(InetAddress.getLoopbackAddress(), port)) {
-        failed.setSoTimeout(5000);
-        // サーバ側でcloseされるので、EOF(または切断)になる
-        try {
-          assertEquals(-1, failed.getInputStream().read());
-        } catch (IOException e) {
-          // RSTによる切断も許容する
-        }
+    AtomicInteger count = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    CapturingLogger captured = new CapturingLogger();
+    int port =
+        start(
+            creator,
+            (parameter, socket) -> {
+              if (count.getAndIncrement() == 0) {
+                throw new IllegalStateException("boom");
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            captured);
+    try (Socket failed = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      failed.setSoTimeout(5000);
+      // サーバ側でcloseされるので、EOF(または切断)になる
+      try {
+        assertEquals(-1, failed.getInputStream().read());
+      } catch (IOException e) {
+        // RSTによる切断も許容する
       }
-      assertEquals('a', echo(port, 'a'));
-      assertTrue(thread.isAlive());
-    } finally {
-      System.setErr(originalErr);
     }
-    assertTrue(err.toString().contains("boom"));
+    assertEquals('a', echo(port, 'a'));
+    assertTrue(thread.isAlive());
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "boom".equals(r.thrown().getMessage())));
+  }
+
+  /** ログを記録するLogger. */
+  static class CapturingLogger implements System.Logger {
+    record Record(System.Logger.Level level, String message, Throwable thrown) {}
+
+    final java.util.List<Record> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @Override
+    public String getName() {
+      return "capturing";
+    }
+
+    @Override
+    public boolean isLoggable(Level level) {
+      return true;
+    }
+
+    @Override
+    public void log(Level level, java.util.ResourceBundle bundle, String msg, Throwable thrown) {
+      records.add(new Record(level, msg, thrown));
+    }
+
+    @Override
+    public void log(Level level, java.util.ResourceBundle bundle, String format, Object... params) {
+      records.add(
+          new Record(
+              level,
+              params == null ? format : java.text.MessageFormat.format(format, params),
+              null));
+    }
+  }
+
+  int start(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator,
+      ServerProcessFactory factory,
+      System.Logger logger)
+      throws Exception {
+    return start(creator, factory, logger, parameter());
+  }
+
+  int start(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator,
+      ServerProcessFactory factory,
+      System.Logger logger,
+      Parameter parameter)
+      throws Exception {
+    server = creator.apply(parameter, factory);
+    server.logger = logger;
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    return server.serverSocket.getLocalPort();
+  }
+
+  /** accept失敗が連続しても、初回のみ詳細・以降は一定件数ごとに件数のみ出力され、復旧時に通知されることを確認する. */
+  @Test
+  void acceptFailuresAreThrottled() throws Exception {
+    server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    server.logger = captured;
+    server.acceptRetryWaitMillis = 1;
+    int failures = AbstractSocketServer.ACCEPT_FAILURE_LOG_INTERVAL * 2 + 1;
+    AtomicInteger count = new AtomicInteger();
+    java.net.ServerSocket failing =
+        new java.net.ServerSocket() {
+          @Override
+          public Socket accept() throws IOException {
+            if (count.getAndIncrement() < failures) {
+              throw new IOException("too many open files");
+            }
+            return super.accept();
+          }
+        };
+    failing.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+    server.serverSocket = failing;
+    thread =
+        new Thread(
+            () -> {
+              try {
+                server.execute(failing);
+              } catch (IOException e) {
+                // 無視
+              }
+            });
+    thread.setDaemon(true);
+    thread.start();
+    assertEquals('a', echo(failing.getLocalPort(), 'a'));
+    // 初回(スタックトレース付き) + 100件目 + 200件目 + 復旧通知
+    assertEquals(4, captured.records.size());
+    assertEquals("accept failed", captured.records.get(0).message());
+    assertTrue(captured.records.get(0).thrown() != null);
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
+    assertEquals(System.Logger.Level.INFO, captured.records.get(3).level());
   }
 
   @Test
@@ -740,10 +835,8 @@ class SocketServerTest {
   /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
   @Test
   void forceCloseExceptionContinuesMonitoring() throws Exception {
-    PrintStream originalErr = System.err;
-    ByteArrayOutputStream err = new ByteArrayOutputStream();
-    System.setErr(new PrintStream(err, true));
-    try {
+    CapturingLogger captured = new CapturingLogger();
+    {
       AtomicInteger count = new AtomicInteger();
       AtomicInteger throwingCalls = new AtomicInteger();
       CountDownLatch secondClosed = new CountDownLatch(1);
@@ -786,14 +879,7 @@ class SocketServerTest {
               };
       Parameter parameter = parameter();
       parameter.put("timeout", "300");
-      server = new MultiSocketServer(parameter, factory);
-      thread = new Thread(server::execute);
-      thread.setDaemon(true);
-      thread.start();
-      for (int i = 0; i < 500 && server.serverSocket == null; i++) {
-        Thread.sleep(10);
-      }
-      int port = server.serverSocket.getLocalPort();
+      int port = start(MultiSocketServer::new, factory, captured, parameter);
       try (Socket first = new Socket(InetAddress.getLoopbackAddress(), port)) {
         // 最初の接続のforceClose()が例外を投げるまで待つ
         for (int i = 0; i < 500 && throwingCalls.get() == 0; i++) {
@@ -808,10 +894,10 @@ class SocketServerTest {
         assertEquals(1, throwingCalls.get());
         assertTrue(server.monitor.isAlive());
       }
-    } finally {
-      System.setErr(originalErr);
     }
-    assertTrue(err.toString().contains("closeboom"));
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "closeboom".equals(r.thrown().getMessage())));
   }
 
   /** 待機した接続が実行開始の直後にforceClose()されないことを確認する. */

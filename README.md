@@ -124,6 +124,21 @@ Server の種類
 - `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdownNow()` を呼び、実行中のタスクを interrupt し、未着手のタスクを破棄します。
 - `PoolSocketServer` のスレッドはデーモンスレッドです。`MultiSocketServer` の接続スレッドもデーモンスレッドのため、JVM は `stop()` 後に終了できます。
 
+ログ
+-----------------
+
+エラーは JDK 標準の `System.Logger`(依存追加なし)で出力します。出力先・レベルは、利用側の `System.Logger` 実装(既定では `java.util.logging`、または SLF4J などへのブリッジ)の設定で制御できます。
+
+- ロガー名: `com.uchicom.server`
+- `ERROR`: 異常(サーバの異常終了、accept の失敗、`ServerProcessFactory` での生成失敗、`forceClose()` の例外など)
+- `INFO`: accept が連続失敗した後の復旧通知
+
+accept が連続して失敗する場合(fd 枯渇など)は、ログが溢れないよう間引きます。
+
+- 初回のみ、スタックトレース付きで出力します。
+- 以降は 100 件ごとに、連続失敗の件数と直近の例外のみを出力します。
+- accept が成功すると連続回数をリセットします(間引いた分がある場合は、`INFO` で復旧を通知します)。
+
 アイドルタイムアウト
 -----------------
 
