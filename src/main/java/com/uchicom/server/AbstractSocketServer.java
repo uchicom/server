@@ -151,11 +151,11 @@ public abstract class AbstractSocketServer implements Server {
   }
 
   /**
-   * 同時接続数の枠を確保する. 上限に達している場合は確保せず、接続を強制クローズする.
+   * 同時接続数の枠を確保する. 上限に達している場合は確保しない.
    *
    * @return 確保できた場合true。呼び出し側は処理終了時に{@link #releaseConnection()}を呼ぶ
    */
-  protected boolean acquireConnection(ServerProcess process) {
+  protected boolean acquireConnection() {
     if (connections.incrementAndGet() <= maxConnection) {
       return true;
     }
@@ -163,7 +163,6 @@ public abstract class AbstractSocketServer implements Server {
     logRejected(
         rejectedByMaxConnection,
         "connection rejected: maxConnection exceeded (max=" + maxConnection + ")");
-    forceCloseQuietly(process);
     return false;
   }
 
@@ -273,6 +272,23 @@ public abstract class AbstractSocketServer implements Server {
    * @throws IOException サーバソケットが閉じられている場合
    */
   protected ServerProcess acceptProcess(ServerSocket serverSocket) throws IOException {
+    return accept(serverSocket, false);
+  }
+
+  /**
+   * 接続を受け付けて、同時接続数の枠を確保したうえでServerProcessを生成する.
+   *
+   * <p>枠はServerProcess生成より前に確保する。上限超過の場合は、ServerProcessを生成せずにソケットをcloseしてnullを返す。
+   * 生成に失敗した場合は枠を解放する。戻り値がnullでない場合、呼び出し側は処理終了時(投入・起動失敗時を含む)に{@link #releaseConnection()}を呼ぶ。
+   *
+   * @return 生成したServerProcess。拒否または継続可能な失敗時はnull
+   * @throws IOException サーバソケットが閉じられている場合
+   */
+  protected ServerProcess acceptLimitedProcess(ServerSocket serverSocket) throws IOException {
+    return accept(serverSocket, true);
+  }
+
+  private ServerProcess accept(ServerSocket serverSocket, boolean limited) throws IOException {
     Socket socket;
     try {
       socket = serverSocket.accept();
@@ -291,18 +307,32 @@ public abstract class AbstractSocketServer implements Server {
       return null;
     }
     resetAcceptFailures();
+    if (limited && !acquireConnection()) {
+      closeQuietly(socket);
+      return null;
+    }
     try {
       ServerProcess process = factory.createServerProcess(parameter, socket);
       resetCreateFailures();
       return process;
-    } catch (RuntimeException e) {
-      logCreateFailure(e);
-      try {
-        socket.close();
-      } catch (IOException ce) {
-        logger.log(Level.ERROR, "socket close failed", ce);
+    } catch (Throwable e) {
+      if (limited) {
+        releaseConnection();
       }
-      return null;
+      closeQuietly(socket);
+      if (e instanceof RuntimeException re) {
+        logCreateFailure(re);
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  private void closeQuietly(Socket socket) {
+    try {
+      socket.close();
+    } catch (IOException ce) {
+      logger.log(Level.ERROR, "socket close failed", ce);
     }
   }
 

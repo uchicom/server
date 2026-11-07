@@ -16,12 +16,9 @@ public class MultiSocketServer extends AbstractSocketServer {
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      final ServerProcess process = acceptProcess(serverSocket);
+      // 上限超過の場合は、ServerProcessを生成せずにnullが返る
+      final ServerProcess process = acceptLimitedProcess(serverSocket);
       if (process == null) {
-        continue;
-      }
-      // 上限に達している場合は、acquireConnectionで接続をクローズする
-      if (!acquireConnection(process)) {
         continue;
       }
       Thread thread =
