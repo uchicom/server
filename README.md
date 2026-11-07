@@ -106,6 +106,21 @@ Parameter のキー一覧
 | `protocol` | 任意 | `SSLContext` のプロトコル。既定は `TLS` |
 | `sslProtocol` | 任意 | 有効にする SSL プロトコル。複数指定は `:` 区切り。既定は `TLSv1.3:TLSv1.2` |
 
+数値キーの有効範囲
+-----------------
+
+コンストラクタで形式(整数)と範囲を検証し、不正なキーをすべて列挙した `IllegalArgumentException` を投げます(サーバは起動しません)。
+
+| キー | 有効範囲 |
+|---|---|
+| `port` | 0〜65535(0 は空きポートを自動割り当て) |
+| `back` | 0以上 |
+| `pool` | 1以上 |
+| `queue` | 1以上 |
+| `queueTimeout` | 1以上(ミリ秒) |
+| `timeout` | 1以上(ミリ秒) |
+| `maxConnection` | 1以上 |
+
 SSL は `ssl`、`keyStoreName`、`keyStorePass` だけで有効にできます。`sslProtocol` を指定すると既定の有効プロトコルを上書きします。
 
 Server の種類

@@ -1044,6 +1044,37 @@ class SocketServerTest {
   }
 
   @Test
+  void invalidNumericValuesAreListed() {
+    Parameter p = new Parameter(new String[0]);
+    p.put("port", "abc");
+    p.put("back", "-1");
+    p.put("pool", "0");
+    p.put("queue", "0");
+    p.put("queueTimeout", "-5");
+    p.put("timeout", "0");
+    p.put("maxConnection", "0");
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new PoolSocketServer(p, new TestServerProcessFactory()));
+    for (String key :
+        new String[] {"port=abc", "back=-1", "pool=0", "queue=0", "queueTimeout=-5", "timeout=0"}) {
+      assertTrue(e.getMessage().contains(key), e.getMessage());
+    }
+    assertTrue(e.getMessage().contains("maxConnection=0"), e.getMessage());
+
+    Parameter big = new Parameter(new String[0]);
+    big.put("port", "65536");
+    big.put("back", "50");
+    e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new SingleSocketServer(big, new TestServerProcessFactory()));
+    assertTrue(e.getMessage().contains("port=65536"), e.getMessage());
+    assertTrue(e.getMessage().contains("0〜65535"), e.getMessage());
+  }
+
+  @Test
   void poolSocketServerRequiresPool() {
     IllegalArgumentException e =
         assertThrows(

@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,7 +68,50 @@ public abstract class AbstractSocketServer implements Server {
     this.parameter = parameter;
     this.factory = factory;
     validateRequiredKeys();
+    validateNumericKeys();
     this.maxConnection = parameter.getInt("maxConnection", Integer.MAX_VALUE);
+  }
+
+  /** 数値キーの有効範囲(最小値, 最大値). 指定されたキーのみ検証する. */
+  private static final Map<String, int[]> NUMERIC_RANGES = new LinkedHashMap<>();
+
+  static {
+    NUMERIC_RANGES.put("port", new int[] {0, 65535});
+    NUMERIC_RANGES.put("back", new int[] {0, Integer.MAX_VALUE});
+    NUMERIC_RANGES.put("pool", new int[] {1, Integer.MAX_VALUE});
+    NUMERIC_RANGES.put("queue", new int[] {1, Integer.MAX_VALUE});
+    NUMERIC_RANGES.put("queueTimeout", new int[] {1, Integer.MAX_VALUE});
+    NUMERIC_RANGES.put("timeout", new int[] {1, Integer.MAX_VALUE});
+    NUMERIC_RANGES.put("maxConnection", new int[] {1, Integer.MAX_VALUE});
+  }
+
+  /** 数値キーの形式と範囲をまとめて検証する. 不正なキーをすべて列挙して失敗する. */
+  private void validateNumericKeys() {
+    List<String> errors = new ArrayList<>();
+    for (Map.Entry<String, int[]> entry : NUMERIC_RANGES.entrySet()) {
+      String key = entry.getKey();
+      if (!parameter.is(key)) {
+        continue;
+      }
+      String value = parameter.get(key);
+      int min = entry.getValue()[0];
+      int max = entry.getValue()[1];
+      try {
+        int number = Integer.parseInt(value == null ? "" : value.trim());
+        if (number < min || number > max) {
+          errors.add(key + "=" + value + " (" + rangeText(min, max) + "で指定してください)");
+        }
+      } catch (NumberFormatException e) {
+        errors.add(key + "=" + value + " (整数で指定してください)");
+      }
+    }
+    if (!errors.isEmpty()) {
+      throw new IllegalArgumentException("キーの値が不正です: " + String.join(", ", errors));
+    }
+  }
+
+  private static String rangeText(int min, int max) {
+    return max == Integer.MAX_VALUE ? min + "以上" : min + "〜" + max;
   }
 
   /** 必須キーの一覧. サブクラスで必須キーが増える場合はオーバーライドする. */
