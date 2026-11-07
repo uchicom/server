@@ -194,6 +194,7 @@ public abstract class AbstractSocketServer implements Server {
       // stopによるソケットクローズで発生する例外は正常終了として扱う
       if (alive) {
         logger.log(Level.ERROR, "server terminated abnormally", e);
+        throw new IllegalStateException("server terminated abnormally", e);
       }
     } finally {
       // 異常終了した場合も含めて、監視スレッドなどの後始末を行う
