@@ -8,6 +8,8 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * ソケットを利用した抽象サーバ.
@@ -94,6 +96,12 @@ public abstract class AbstractSocketServer implements Server {
       e.printStackTrace();
     }
     processList.add(process);
+    // 登録前にstopのforceCloseRemaining()が終わっていた場合、監視されないため自分で閉じる
+    if (!alive) {
+      processList.remove(process);
+      forceCloseQuietly(process);
+      return;
+    }
     try {
       process.execute();
     } finally {
@@ -171,6 +179,23 @@ public abstract class AbstractSocketServer implements Server {
     @Override
     public void run() {
       executeProcess(process);
+    }
+  }
+
+  /** ExecutorServiceへタスクを渡す. shutdown済みで拒否された場合は、対象のServerProcessを強制クローズする. */
+  protected void submitProcess(ExecutorService exec, ServerProcess process) {
+    try {
+      exec.execute(new ProcessTask(process));
+    } catch (RejectedExecutionException e) {
+      forceCloseQuietly(process);
+    }
+  }
+
+  private void forceCloseQuietly(ServerProcess process) {
+    try {
+      process.forceClose();
+    } catch (RuntimeException e) {
+      e.printStackTrace();
     }
   }
 

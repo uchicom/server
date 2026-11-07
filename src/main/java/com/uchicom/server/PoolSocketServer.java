@@ -39,7 +39,7 @@ public class PoolSocketServer extends AbstractSocketServer {
       if (process == null) {
         continue;
       }
-      exec.execute(new ProcessTask(process));
+      submitProcess(exec, process);
     }
   }
 }
