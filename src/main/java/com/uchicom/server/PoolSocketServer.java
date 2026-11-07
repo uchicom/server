@@ -26,7 +26,10 @@ public class PoolSocketServer extends AbstractSocketServer {
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
+      final ServerProcess process = acceptProcess(serverSocket);
+      if (process == null) {
+        continue;
+      }
       exec.execute(() -> executeProcess(process));
     }
   }

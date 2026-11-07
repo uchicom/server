@@ -5,6 +5,7 @@ import com.uchicom.util.Parameter;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -83,6 +84,46 @@ public abstract class AbstractSocketServer implements Server {
       process.execute();
     } finally {
       processList.remove(process);
+    }
+  }
+
+  /**
+   * 接続を受け付けて、ServerProcessを生成する.
+   *
+   * <p>acceptの一時的なIOException(fd枯渇など)や、ServerProcess生成の失敗ではnullを返す(呼び出し側はループを継続する)。
+   * 生成に失敗した場合は、acceptしたソケットをcloseする。 stopによるサーバソケットのクローズ時は、IOExceptionをそのままスローする。
+   *
+   * @return 生成したServerProcess。継続可能な失敗時はnull
+   * @throws IOException サーバソケットが閉じられている場合
+   */
+  protected ServerProcess acceptProcess(ServerSocket serverSocket) throws IOException {
+    Socket socket;
+    try {
+      socket = serverSocket.accept();
+    } catch (IOException e) {
+      if (!alive || serverSocket.isClosed()) {
+        throw e;
+      }
+      e.printStackTrace();
+      // fd枯渇などでの高負荷なリトライを避ける
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        throw e;
+      }
+      return null;
+    }
+    try {
+      return factory.createServerProcess(parameter, socket);
+    } catch (RuntimeException e) {
+      e.printStackTrace();
+      try {
+        socket.close();
+      } catch (IOException ce) {
+        ce.printStackTrace();
+      }
+      return null;
     }
   }
 

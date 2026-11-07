@@ -15,7 +15,10 @@ public class MultiSocketServer extends AbstractSocketServer {
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
+      final ServerProcess process = acceptProcess(serverSocket);
+      if (process == null) {
+        continue;
+      }
       Thread thread =
           new Thread() {
             public void run() {

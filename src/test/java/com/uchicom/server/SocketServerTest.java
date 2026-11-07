@@ -157,30 +157,98 @@ class SocketServerTest {
     assertLoopEndsWhenNotAlive(VirtualSocketServer::new);
   }
 
-  @Test
-  void unexpectedExceptionStopsServer() throws Exception {
+  /** createServerProcessが例外を投げても、サーバが継続して次の接続を処理し、acceptしたソケットがcloseされることを確認する. */
+  void assertCreateFailureContinues(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
     PrintStream originalErr = System.err;
     ByteArrayOutputStream err = new ByteArrayOutputStream();
     System.setErr(new PrintStream(err, true));
     try {
+      AtomicInteger count = new AtomicInteger();
+      TestServerProcessFactory echo = new TestServerProcessFactory();
       int port =
           start(
-              SingleSocketServer::new,
+              creator,
               (parameter, socket) -> {
-                throw new IllegalStateException("boom");
+                if (count.getAndIncrement() == 0) {
+                  throw new IllegalStateException("boom");
+                }
+                return echo.createServerProcess(parameter, socket);
               });
-      try (Socket ignored = new Socket(InetAddress.getLoopbackAddress(), port)) {
-        // 接続のみ
+      try (Socket failed = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        failed.setSoTimeout(5000);
+        // サーバ側でcloseされるので、EOF(または切断)になる
+        try {
+          assertEquals(-1, failed.getInputStream().read());
+        } catch (IOException e) {
+          // RSTによる切断も許容する
+        }
       }
-      thread.join(5000);
-      assertFalse(thread.isAlive());
-      server.monitor.join(5000);
-      assertFalse(server.monitor.isAlive());
+      assertEquals('a', echo(port, 'a'));
+      assertTrue(thread.isAlive());
     } finally {
       System.setErr(originalErr);
     }
-    // 想定外の例外はstopによるものと区別して出力される
     assertTrue(err.toString().contains("boom"));
+  }
+
+  @Test
+  void singleCreateFailure() throws Exception {
+    assertCreateFailureContinues(SingleSocketServer::new);
+  }
+
+  @Test
+  void multiCreateFailure() throws Exception {
+    assertCreateFailureContinues(MultiSocketServer::new);
+  }
+
+  @Test
+  void poolCreateFailure() throws Exception {
+    assertCreateFailureContinues(PoolSocketServer::new);
+  }
+
+  @Test
+  void virtualCreateFailure() throws Exception {
+    assertCreateFailureContinues(VirtualSocketServer::new);
+  }
+
+  @Test
+  void acceptIOExceptionContinues() throws Exception {
+    PrintStream originalErr = System.err;
+    System.setErr(new PrintStream(new ByteArrayOutputStream(), true));
+    try {
+      server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+      AtomicInteger count = new AtomicInteger();
+      java.net.ServerSocket failing =
+          new java.net.ServerSocket() {
+            @Override
+            public Socket accept() throws IOException {
+              if (count.getAndIncrement() == 0) {
+                throw new IOException("too many open files");
+              }
+              return super.accept();
+            }
+          };
+      failing.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+      server.serverSocket = failing;
+      thread =
+          new Thread(
+              () -> {
+                try {
+                  server.execute(failing);
+                } catch (IOException e) {
+                  // 無視
+                }
+              });
+      thread.setDaemon(true);
+      thread.start();
+      assertEquals('a', echo(failing.getLocalPort(), 'a'));
+      assertTrue(count.get() >= 2);
+      assertTrue(thread.isAlive());
+    } finally {
+      System.setErr(originalErr);
+      server.stop();
+    }
   }
 
   @Test
