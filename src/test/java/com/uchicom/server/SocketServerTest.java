@@ -118,6 +118,40 @@ class SocketServerTest {
   }
 
   @Test
+  void hostLoopback() throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    server =
+        new SingleSocketServer(
+            withHost(parameter(), InetAddress.getLoopbackAddress().getHostAddress()), factory);
+    startServer();
+    assertTrue(server.serverSocket.getInetAddress().isLoopbackAddress());
+    assertEquals('a', echo(server.serverSocket.getLocalPort(), 'a'));
+  }
+
+  @Test
+  void hostUnspecifiedBindsAllInterfaces() throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    server = new SingleSocketServer(parameter(), factory);
+    startServer();
+    assertTrue(server.serverSocket.getInetAddress().isAnyLocalAddress());
+    assertEquals('a', echo(server.serverSocket.getLocalPort(), 'a'));
+  }
+
+  Parameter withHost(Parameter parameter, String host) {
+    parameter.put("host", host);
+    return parameter;
+  }
+
+  void startServer() throws Exception {
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+  }
+
+  @Test
   void single() throws Exception {
     assertEchoAndStop(SingleSocketServer::new);
   }
