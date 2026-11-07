@@ -85,6 +85,11 @@ static class EchoProcess implements ServerProcess {
 
 `ServerProcess#getLastTime()` は最終アクセス時刻(ミリ秒)を返します。アイドルタイムアウトの判定に使われるため、通信のたびに更新してください。
 
+### equals / hashCode に関する注意
+
+`ServerProcess` の実装クラスでは、`equals` / `hashCode` を**オーバーライドせず、同一性ベース(`Object` の既定の実装)のまま**にしてください。
+サーバは監視対象の管理(`List#remove` や `Map` のキー)で `equals` / `hashCode` に依存しています。値ベースで実装すると、別の接続が同一視されて、誤って監視対象から外れたり(アイドルタイムアウトや `stop()` の強制クローズの対象外になる)、登録時刻が上書きされたりします。
+
 Parameter のキー一覧
 -----------------
 
