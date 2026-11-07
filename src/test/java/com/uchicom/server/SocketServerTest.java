@@ -1075,6 +1075,38 @@ class SocketServerTest {
   }
 
   @Test
+  void bindFailureIsThrown() throws Exception {
+    try (java.net.ServerSocket used =
+        new java.net.ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+      Parameter p = parameter();
+      p.put("port", String.valueOf(used.getLocalPort()));
+      p.put("host", "127.0.0.1");
+      SingleSocketServer s = new SingleSocketServer(p, new TestServerProcessFactory());
+      IllegalStateException e = assertThrows(IllegalStateException.class, s::execute);
+      assertTrue(e.getCause() instanceof java.net.BindException, String.valueOf(e.getCause()));
+    }
+  }
+
+  @Test
+  void sslKeyStoreMissingIsThrown() {
+    Parameter p = parameter();
+    p.put("ssl", "true");
+    p.put("keyStorePass", "pass");
+    p.put("keyStoreName", "no-such-keystore.p12");
+    SingleSocketServer s = new SingleSocketServer(p, new TestServerProcessFactory());
+    IllegalStateException e = assertThrows(IllegalStateException.class, s::execute);
+    assertTrue(e.getCause() instanceof java.io.FileNotFoundException, String.valueOf(e.getCause()));
+  }
+
+  @Test
+  void stopReturnsNormally() throws Exception {
+    start(SingleSocketServer::new, new TestServerProcessFactory());
+    server.stop();
+    thread.join(5000);
+    assertFalse(thread.isAlive());
+  }
+
+  @Test
   void poolSocketServerRequiresPool() {
     IllegalArgumentException e =
         assertThrows(
