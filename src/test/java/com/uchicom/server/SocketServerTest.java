@@ -694,10 +694,13 @@ class SocketServerTest {
       Thread.sleep(10);
     }
     assertEquals(1, factory.executed.get());
-    // 2件目は上限超過で閉じられる
-    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
-    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    // 2件目は上限超過で、ServerProcessを生成せずに閉じられる
+    Socket rejected = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(rejected);
+    rejected.setSoTimeout(10000);
+    assertEquals(-1, rejected.getInputStream().read());
     assertWarned("maxConnection exceeded");
+    assertEquals(1, factory.created.get());
     assertEquals(1, factory.closed[0].getCount());
     assertEquals(1, factory.executed.get());
     // 1件目が終了すると枠が解放され、3件目は処理される
@@ -711,7 +714,8 @@ class SocketServerTest {
       Thread.sleep(10);
     }
     assertEquals(2, factory.executed.get());
-    assertEquals(1, factory.closed[2].getCount());
+    assertEquals(2, factory.created.get());
+    assertEquals(1, factory.closed[1].getCount());
   }
 
   @Test
@@ -722,6 +726,42 @@ class SocketServerTest {
   @Test
   void virtualMaxConnection() throws Exception {
     assertMaxConnection(VirtualSocketServer::new);
+  }
+
+  /** createServerProcessが失敗しても枠がリークせず、次の接続が処理されることを確認する. */
+  void assertCreateFailureReleasesSlot(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    AtomicInteger created = new AtomicInteger();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("maxConnection", "1");
+              return creator.apply(p, f);
+            },
+            (parameter, socket) -> {
+              if (created.getAndIncrement() == 0) {
+                throw new IllegalStateException("create failed");
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            serverLog);
+    Socket failed = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(failed);
+    failed.setSoTimeout(10000);
+    assertEquals(-1, failed.getInputStream().read());
+    // maxConnection=1でも、生成失敗時に枠が解放されているので次の接続が処理される
+    assertEquals('a', echo(port, 'a'));
+  }
+
+  @Test
+  void multiCreateFailureReleasesSlot() throws Exception {
+    assertCreateFailureReleasesSlot(MultiSocketServer::new);
+  }
+
+  @Test
+  void virtualCreateFailureReleasesSlot() throws Exception {
+    assertCreateFailureReleasesSlot(VirtualSocketServer::new);
   }
 
   /** maxConnection未指定時は、複数の同時接続がすべて処理されることを確認する. */
@@ -801,6 +841,25 @@ class SocketServerTest {
                     r.level() == System.Logger.Level.ERROR
                         && r.message().contains("thread start failed")),
         serverLog.records.toString());
+  }
+
+  /** OutOfMemoryError以外のVirtualMachineErrorは、握りつぶさずにサーバを終了させることを確認する. */
+  @Test
+  void multiThreadStartVirtualMachineErrorTerminates() throws Exception {
+    int port =
+        start(
+            (p, f) ->
+                new MultiSocketServer(p, f) {
+                  @Override
+                  void startThread(Thread t) {
+                    throw new InternalError("fatal");
+                  }
+                },
+            new TestServerProcessFactory(),
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    thread.join(10000);
+    assertFalse(thread.isAlive());
   }
 
   @Test
