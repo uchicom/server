@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v5
     - name: Set up JDK 25
-      uses: actions/setup-java@v3
+      uses: actions/setup-java@v5
       with:
         java-version: '25'
         distribution: 'temurin'
@@ -22,40 +22,30 @@ jobs:
     - name: Create Tag name
       id: project
       run: |
-        echo ::set-output name=version::$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec)
-        echo ::set-output name=name::$(mvn -q -Dexec.executable=echo -Dexec.args='${project.name}' --non-recursive exec:exec)
+        echo "version=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.version}' --non-recursive exec:exec)" >> "$GITHUB_OUTPUT"
+        echo "name=$(mvn -q -Dexec.executable=echo -Dexec.args='${project.name}' --non-recursive exec:exec)" >> "$GITHUB_OUTPUT"
     - name: Create Tag
       run: |
         git tag ${{ steps.project.outputs.version }}
         git push origin ${{ steps.project.outputs.version }}
     - name: Create release
-      id: create_release
-      uses: actions/create-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.project.outputs.version }}
-        release_name: Release v${{ steps.project.outputs.version }}
-        body: |
-          # Maven Central
-          https://search.maven.org/artifact/com.uchicom/${{ steps.project.outputs.name }}/${{ steps.project.outputs.version }}/jar
-          # Apache Maven
-          ```
-          <dependency>
-            <groupId>com.uchicom</groupId>
-            <artifactId>${{ steps.project.outputs.name }}</artifactId>
-            <version>${{ steps.project.outputs.version }}</version>
-          </dependency>
-          ```
-        draft: false
-        prerelease: false
-    - name: Upload Release Action
-      id: upload-release-asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./target/${{ steps.project.outputs.name }}-${{ steps.project.outputs.version }}.jar
-        asset_name: ${{ steps.project.outputs.name }}-${{ steps.project.outputs.version }}.jar
-        asset_content_type: application/java-archive
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        VERSION: ${{ steps.project.outputs.version }}
+        NAME: ${{ steps.project.outputs.name }}
+      run: |
+        cat > release-notes.md <<EOT
+        # Maven Central
+        https://search.maven.org/artifact/com.uchicom/${NAME}/${VERSION}/jar
+        # Apache Maven
+        \`\`\`
+        <dependency>
+          <groupId>com.uchicom</groupId>
+          <artifactId>${NAME}</artifactId>
+          <version>${VERSION}</version>
+        </dependency>
+        \`\`\`
+        EOT
+        gh release create "${VERSION}" "./target/${NAME}-${VERSION}.jar" \
+          --title "Release v${VERSION}" \
+          --notes-file release-notes.md
