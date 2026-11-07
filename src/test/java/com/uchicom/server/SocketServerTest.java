@@ -3,6 +3,7 @@ package com.uchicom.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.uchicom.util.Parameter;
@@ -1025,5 +1026,39 @@ class SocketServerTest {
     thread.start();
     thread.join(5000);
     assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void missingRequiredKeysAreListed() {
+    Parameter empty = new Parameter(new String[0]);
+    for (BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator :
+        java.util.List.<BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer>>of(
+            SingleSocketServer::new, MultiSocketServer::new, VirtualSocketServer::new)) {
+      IllegalArgumentException e =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> creator.apply(empty, new TestServerProcessFactory()));
+      assertTrue(e.getMessage().contains("port, back"), e.getMessage());
+      assertFalse(e.getMessage().contains("pool"), e.getMessage());
+    }
+  }
+
+  @Test
+  void poolSocketServerRequiresPool() {
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                new PoolSocketServer(new Parameter(new String[0]), new TestServerProcessFactory()));
+    assertTrue(e.getMessage().contains("port, back, pool"), e.getMessage());
+
+    Parameter noPool = new Parameter(new String[0]);
+    noPool.put("port", "0");
+    noPool.put("back", "50");
+    e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new PoolSocketServer(noPool, new TestServerProcessFactory()));
+    assertTrue(e.getMessage().endsWith("pool"), e.getMessage());
   }
 }

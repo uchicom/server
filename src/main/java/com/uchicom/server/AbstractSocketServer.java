@@ -8,6 +8,7 @@ import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,7 +66,26 @@ public abstract class AbstractSocketServer implements Server {
   public AbstractSocketServer(Parameter parameter, ServerProcessFactory factory) {
     this.parameter = parameter;
     this.factory = factory;
+    validateRequiredKeys();
     this.maxConnection = parameter.getInt("maxConnection", Integer.MAX_VALUE);
+  }
+
+  /** 必須キーの一覧. サブクラスで必須キーが増える場合はオーバーライドする. */
+  protected List<String> requiredKeys() {
+    return List.of("port", "back");
+  }
+
+  /** 必須キーの未指定をまとめて検証する. 不足キーをすべて列挙して失敗する. */
+  private void validateRequiredKeys() {
+    List<String> missing = new ArrayList<>();
+    for (String key : requiredKeys()) {
+      if (!parameter.is(key)) {
+        missing.add(key);
+      }
+    }
+    if (!missing.isEmpty()) {
+      throw new IllegalArgumentException("必須のキーが指定されていません: " + String.join(", ", missing));
+    }
   }
 
   /**
