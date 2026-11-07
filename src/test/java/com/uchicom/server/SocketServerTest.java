@@ -254,7 +254,14 @@ class SocketServerTest {
   @Test
   void idleProcessIsForceClosed() throws Exception {
     TestServerProcessFactory factory = new TestServerProcessFactory(true, 0);
-    int port = start(MultiSocketServer::new, factory);
+    int port =
+        start(
+            (p, f) -> {
+              // タイムアウトは実行開始時刻が基準のため、短くして待ち時間を抑える
+              p.put("timeout", "300");
+              return new MultiSocketServer(p, f);
+            },
+            factory);
     try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
       assertTrue(factory.forceClosed.await(10, java.util.concurrent.TimeUnit.SECONDS));
     }
@@ -610,39 +617,34 @@ class SocketServerTest {
     assertTrue(err.toString().contains("closeboom"));
   }
 
-  /** プール満杯で待機した接続は、実行開始時のonStart()で時刻が更新され、待機時間が経過扱いにならないことを確認する. */
+  /** 待機した接続が実行開始の直後にforceClose()されないことを確認する. */
   @Test
-  void queuedProcessRefreshesLastTimeOnStart() throws Exception {
+  void queuedProcessIsNotTimedOutImmediately() throws Exception {
     AtomicInteger count = new AtomicInteger();
     CountDownLatch busyStarted = new CountDownLatch(2);
     CountDownLatch release = new CountDownLatch(1);
     CountDownLatch queuedFinished = new CountDownLatch(1);
-    java.util.concurrent.atomic.AtomicLong idleAtStart =
+    java.util.concurrent.atomic.AtomicLong execStart = new java.util.concurrent.atomic.AtomicLong();
+    java.util.concurrent.atomic.AtomicLong closedAt =
         new java.util.concurrent.atomic.AtomicLong(-1);
-    AtomicInteger queuedStarts = new AtomicInteger();
     long timeout = 300;
     ServerProcessFactory factory =
         (parameter, socket) ->
             new ServerProcess() {
               final int index = count.getAndIncrement();
-              volatile long lastTime = System.currentTimeMillis();
-
-              @Override
-              public void onStart() {
-                if (index >= 2) {
-                  queuedStarts.incrementAndGet();
-                }
-                lastTime = System.currentTimeMillis();
-              }
+              final long created = System.currentTimeMillis();
 
               @Override
               public long getLastTime() {
-                // 先頭2接続は常に通信中扱いにして、タイムアウトさせない
-                return index < 2 ? System.currentTimeMillis() : lastTime;
+                // 先頭2接続は常に通信中扱い。待機した接続は生成時刻のまま更新しない
+                return index < 2 ? System.currentTimeMillis() : created;
               }
 
               @Override
               public void forceClose() {
+                if (index >= 2) {
+                  closedAt.compareAndSet(-1, System.currentTimeMillis());
+                }
                 try {
                   socket.close();
                 } catch (IOException e) {
@@ -658,7 +660,9 @@ class SocketServerTest {
                     release.await();
                     return;
                   }
-                  idleAtStart.set(System.currentTimeMillis() - getLastTime());
+                  execStart.set(System.currentTimeMillis());
+                  // 実行開始後、監視スレッドが判定する時間を与える
+                  Thread.sleep(1500);
                 } catch (Exception e) {
                   // 無視
                 } finally {
@@ -682,54 +686,15 @@ class SocketServerTest {
         Socket b = new Socket(InetAddress.getLoopbackAddress(), port)) {
       assertTrue(busyStarted.await(10, TimeUnit.SECONDS));
       try (Socket queued = new Socket(InetAddress.getLoopbackAddress(), port)) {
-        // 待機がtimeoutを大きく超えるまで、プールを塞いだままにする
         Thread.sleep(timeout * 3);
-        assertEquals(0, queuedStarts.get());
         release.countDown();
         assertTrue(queuedFinished.await(10, TimeUnit.SECONDS));
-        assertEquals(1, queuedStarts.get());
-        // 実行開始時に更新されているので、待機時間は含まれない
-        assertTrue(idleAtStart.get() >= 0 && idleAtStart.get() < timeout * 2);
+        // 実行時間(1500ms)はtimeoutを超えるので最終的にはタイムアウトするが、
+        // 待機時間を含めた判定で開始直後に閉じられることはなく、実行開始からtimeout経過後に閉じられる
+        assertTrue(closedAt.get() >= 0);
+        assertTrue(closedAt.get() - execStart.get() >= timeout);
       }
     }
-  }
-
-  /** onStart()が例外を投げても、スタックトレースを出力して処理を実行することを確認する. */
-  @Test
-  void onStartExceptionStillExecutes() throws Exception {
-    PrintStream originalErr = System.err;
-    ByteArrayOutputStream err = new ByteArrayOutputStream();
-    System.setErr(new PrintStream(err, true));
-    try {
-      AtomicInteger executed = new AtomicInteger();
-      AbstractSocketServer server =
-          new SingleSocketServer(parameter(), new TestServerProcessFactory());
-      server.executeProcess(
-          new ServerProcess() {
-            @Override
-            public void onStart() {
-              throw new IllegalStateException("startboom");
-            }
-
-            @Override
-            public long getLastTime() {
-              return System.currentTimeMillis();
-            }
-
-            @Override
-            public void forceClose() {}
-
-            @Override
-            public void execute() {
-              executed.incrementAndGet();
-            }
-          });
-      assertEquals(1, executed.get());
-      assertTrue(server.processList.isEmpty());
-    } finally {
-      System.setErr(originalErr);
-    }
-    assertTrue(err.toString().contains("startboom"));
   }
 
   @Test

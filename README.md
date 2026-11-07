@@ -48,11 +48,6 @@ static class EchoProcess implements ServerProcess {
 	}
 
 	@Override
-	public void onStart() {
-	lastTime = System.currentTimeMillis();
-	}
-
-	@Override
 	public long getLastTime() {
 	return lastTime;
 	}
@@ -142,13 +137,5 @@ Server の種類
 ### 実行待ちの接続
 
 `PoolSocketServer` でプールが満杯のとき、接続は実行待ちになります。待機中の接続は監視対象外で、タイムアウトでクローズされません。
-実行を開始する直前(監視対象に登録する前)に `ServerProcess#onStart()` が呼ばれるので、`getLastTime()` の元になる時刻をここで更新してください。
-更新しないと、待機時間が `timeout` を超えていた場合に、実行開始の直後に `forceClose()` されることがあります。
-`onStart()` は既定で何もしません。`onStart()` が例外を投げた場合はスタックトレースを出力し、そのまま実行を続けます。
-
-```java
-@Override
-public void onStart() {
-	lastTime = System.currentTimeMillis();
-}
-```
+実行を開始して監視対象に登録した時刻が記録され、タイムアウトは `getLastTime()` と登録時刻の新しい方を基準に判定します。
+そのため、待機時間が `timeout` を超えた接続が実行開始の直後に `forceClose()` されることはありません(`ServerProcess` 側で特別な対応は不要です)。

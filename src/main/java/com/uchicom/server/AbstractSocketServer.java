@@ -7,6 +7,8 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -25,6 +27,10 @@ public abstract class AbstractSocketServer implements Server {
   protected ServerProcessFactory factory;
 
   protected List<ServerProcess> processList = new CopyOnWriteArrayList<ServerProcess>();
+
+  /** 監視対象に登録した時刻(実行開始時刻). 実行待ちの時間をアイドル時間に含めないために使う. */
+  private final Map<ServerProcess, Long> startTimes = new ConcurrentHashMap<>();
+
   protected volatile ServerSocket serverSocket;
   protected volatile Thread monitor;
   volatile boolean alive = true;
@@ -46,9 +52,12 @@ public abstract class AbstractSocketServer implements Server {
           public void run() {
             while (alive) {
               for (ServerProcess process : processList) {
-                if (System.currentTimeMillis() - process.getLastTime() > timeout) {
+                long now = System.currentTimeMillis();
+                // 最終アクセス時刻と実行開始時刻のうち新しい方を基準にする
+                long base = Math.max(process.getLastTime(), startTimes.getOrDefault(process, 0L));
+                if (now - base > timeout) {
                   // forceClose()が例外を投げても、繰り返し呼ばれないよう先に削除して監視を継続する
-                  processList.remove(process);
+                  unregister(process);
                   try {
                     process.forceClose();
                   } catch (RuntimeException e) {
@@ -85,28 +94,30 @@ public abstract class AbstractSocketServer implements Server {
   }
 
   /**
-   * 実行開始のフックを呼んでから、アイドルタイムアウトの監視対象として登録して、処理を実行する. 処理終了時に監視対象から外す.
+   * アイドルタイムアウトの監視対象として登録して、処理を実行する. 処理終了時に監視対象から外す.
    *
-   * <p>実行待ちの間は監視対象外のため、待機時間で開始直後にタイムアウトされないよう、登録前に{@link ServerProcess#onStart()}を呼ぶ。
+   * <p>実行待ちの間は監視対象外のため、登録時刻を記録し、タイムアウト判定は{@link ServerProcess#getLastTime()}と登録時刻の新しい方を基準にする。
+   * これにより、待機時間で開始直後にタイムアウトされない。
    */
   protected void executeProcess(ServerProcess process) {
-    try {
-      process.onStart();
-    } catch (RuntimeException e) {
-      e.printStackTrace();
-    }
+    startTimes.put(process, System.currentTimeMillis());
     processList.add(process);
     // 登録前にstopのforceCloseRemaining()が終わっていた場合、監視されないため自分で閉じる
     if (!alive) {
-      processList.remove(process);
+      unregister(process);
       forceCloseQuietly(process);
       return;
     }
     try {
       process.execute();
     } finally {
-      processList.remove(process);
+      unregister(process);
     }
+  }
+
+  private void unregister(ServerProcess process) {
+    processList.remove(process);
+    startTimes.remove(process);
   }
 
   /**
@@ -215,7 +226,7 @@ public abstract class AbstractSocketServer implements Server {
   /** stop後に残った接続を強制クローズする. 監視スレッドは停止しているため、タイムアウトを待たずに閉じる. */
   protected void forceCloseRemaining() {
     for (ServerProcess process : processList) {
-      processList.remove(process);
+      unregister(process);
       try {
         process.forceClose();
       } catch (RuntimeException e) {
