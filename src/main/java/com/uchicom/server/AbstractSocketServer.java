@@ -148,5 +148,18 @@ public abstract class AbstractSocketServer implements Server {
         e.printStackTrace();
       }
     }
+    forceCloseRemaining();
+  }
+
+  /** stop後に残った接続を強制クローズする. 監視スレッドは停止しているため、タイムアウトを待たずに閉じる. */
+  protected void forceCloseRemaining() {
+    for (ServerProcess process : processList) {
+      processList.remove(process);
+      try {
+        process.forceClose();
+      } catch (RuntimeException e) {
+        e.printStackTrace();
+      }
+    }
   }
 }

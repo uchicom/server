@@ -13,13 +13,21 @@ public class PoolSocketServer extends AbstractSocketServer {
 
   public PoolSocketServer(Parameter parameter, ServerProcessFactory factory) {
     super(parameter, factory);
-    exec = Executors.newFixedThreadPool(parameter.getInt("pool"));
+    // 残った接続でJVMの終了を妨げないよう、デーモンスレッドにする
+    exec =
+        Executors.newFixedThreadPool(
+            parameter.getInt("pool"),
+            r -> {
+              Thread t = new Thread(r);
+              t.setDaemon(true);
+              return t;
+            });
   }
 
   @Override
   public void stop() {
     super.stop();
-    exec.shutdown();
+    exec.shutdownNow();
   }
 
   /** メイン処理 */

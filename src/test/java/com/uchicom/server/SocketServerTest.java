@@ -337,6 +337,83 @@ class SocketServerTest {
     assertIdleForceClosedThenNext(VirtualSocketServer::new);
   }
 
+  /** stop()後に残った接続が、タイムアウトを待たずに強制クローズされ、スレッドが終了することを確認する. */
+  void assertStopForceClosesRemaining(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    CountDownLatch forceClosed = new CountDownLatch(1);
+    CountDownLatch executed = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    ServerProcessFactory factory =
+        (parameter, socket) ->
+            new ServerProcess() {
+              @Override
+              public long getLastTime() {
+                return System.currentTimeMillis();
+              }
+
+              @Override
+              public void forceClose() {
+                forceClosed.countDown();
+                try {
+                  socket.close();
+                } catch (IOException e) {
+                  // 無視
+                }
+              }
+
+              @Override
+              public void execute() {
+                executed.countDown();
+                try (socket) {
+                  socket.getInputStream().read();
+                } catch (IOException e) {
+                  // 強制クローズによる例外
+                } finally {
+                  finished.countDown();
+                }
+              }
+            };
+    Parameter parameter = parameter();
+    // タイムアウトでは閉じられない十分長い値
+    parameter.put("timeout", "600000");
+    server = creator.apply(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    try (Socket idle = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      assertTrue(executed.await(10, TimeUnit.SECONDS));
+      server.stop();
+      assertTrue(forceClosed.await(10, TimeUnit.SECONDS));
+      assertTrue(finished.await(10, TimeUnit.SECONDS));
+    }
+    thread.join(5000);
+    assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void singleStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(SingleSocketServer::new);
+  }
+
+  @Test
+  void multiStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(MultiSocketServer::new);
+  }
+
+  @Test
+  void poolStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(PoolSocketServer::new);
+  }
+
+  @Test
+  void virtualStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(VirtualSocketServer::new);
+  }
+
   /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
   @Test
   void forceCloseExceptionContinuesMonitoring() throws Exception {

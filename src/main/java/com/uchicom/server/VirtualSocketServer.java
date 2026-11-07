@@ -19,7 +19,7 @@ public class VirtualSocketServer extends AbstractSocketServer {
   @Override
   public void stop() {
     super.stop();
-    exec.shutdown();
+    exec.shutdownNow();
   }
 
   /** メイン処理 */

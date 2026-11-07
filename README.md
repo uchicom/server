@@ -117,8 +117,9 @@ Server の種類
 ### 停止の挙動
 
 - `stop()` は `alive` を false にし、サーバソケットを閉じて `accept()` を中断させます。`execute()` はその後に戻ります。
-- `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdown()` を呼びます。処理中の接続は終了まで継続されます。
-- `MultiSocketServer` の接続スレッドはデーモンスレッドのため、他にスレッドがなければ JVM の終了とともに破棄されます。
+- `stop()` は監視スレッドを停止した後、残っている接続をすべて `ServerProcess#forceClose()` で即時に強制クローズします(タイムアウトを待ちません)。`forceClose()` が例外を投げても、残りの接続のクローズは継続します。
+- `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdownNow()` を呼び、実行中のタスクを interrupt し、未着手のタスクを破棄します。
+- `PoolSocketServer` のスレッドはデーモンスレッドです。`MultiSocketServer` の接続スレッドもデーモンスレッドのため、JVM は `stop()` 後に終了できます。
 
 アイドルタイムアウト
 -----------------
