@@ -45,8 +45,13 @@ public abstract class AbstractSocketServer implements Server {
             while (alive) {
               for (ServerProcess process : processList) {
                 if (System.currentTimeMillis() - process.getLastTime() > timeout) {
-                  process.forceClose();
+                  // forceClose()が例外を投げても、繰り返し呼ばれないよう先に削除して監視を継続する
                   processList.remove(process);
+                  try {
+                    process.forceClose();
+                  } catch (RuntimeException e) {
+                    e.printStackTrace();
+                  }
                 }
               }
               try {
