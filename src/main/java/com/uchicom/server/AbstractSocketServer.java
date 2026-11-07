@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * ソケットを利用した抽象サーバ.
@@ -38,9 +39,34 @@ public abstract class AbstractSocketServer implements Server {
   /** アイドルタイムアウトの既定値(ミリ秒). */
   static final int DEFAULT_TIMEOUT = 10 * 1000;
 
+  /** 最大同時接続数. 未指定時は上限なし. {@link MultiSocketServer}、{@link VirtualSocketServer}が対象. */
+  private final int maxConnection;
+
+  /** 同時接続数の制限対象として処理中の接続数. */
+  private final AtomicInteger connections = new AtomicInteger();
+
   public AbstractSocketServer(Parameter parameter, ServerProcessFactory factory) {
     this.parameter = parameter;
     this.factory = factory;
+    this.maxConnection = parameter.getInt("maxConnection", Integer.MAX_VALUE);
+  }
+
+  /**
+   * 同時接続数の枠を確保する. 上限に達している場合は確保せず、接続を強制クローズする.
+   *
+   * @return 確保できた場合true。呼び出し側は処理終了時に{@link #releaseConnection()}を呼ぶ
+   */
+  protected boolean acquireConnection(ServerProcess process) {
+    if (connections.incrementAndGet() <= maxConnection) {
+      return true;
+    }
+    connections.decrementAndGet();
+    forceCloseQuietly(process);
+    return false;
+  }
+
+  protected void releaseConnection() {
+    connections.decrementAndGet();
   }
 
   @Override
@@ -190,21 +216,39 @@ public abstract class AbstractSocketServer implements Server {
     /** 実行待ちに入った時刻. */
     final long queuedTime = System.currentTimeMillis();
 
-    ProcessTask(ServerProcess process) {
+    /** 同時接続数の枠を保持していて、処理終了時に解放する場合true. */
+    final boolean counted;
+
+    ProcessTask(ServerProcess process, boolean counted) {
       this.process = process;
+      this.counted = counted;
     }
 
     @Override
     public void run() {
-      executeProcess(process);
+      try {
+        executeProcess(process);
+      } finally {
+        if (counted) {
+          releaseConnection();
+        }
+      }
     }
   }
 
   /** ExecutorServiceへタスクを渡す. shutdown済みで拒否された場合は、対象のServerProcessを強制クローズする. */
   protected void submitProcess(ExecutorService exec, ServerProcess process) {
+    submitProcess(exec, process, false);
+  }
+
+  /** counted=trueの場合、確保済みの同時接続数の枠をタスク終了時(拒否された場合は即時)に解放する. */
+  protected void submitProcess(ExecutorService exec, ServerProcess process, boolean counted) {
     try {
-      exec.execute(new ProcessTask(process));
+      exec.execute(new ProcessTask(process, counted));
     } catch (RejectedExecutionException e) {
+      if (counted) {
+        releaseConnection();
+      }
       forceCloseQuietly(process);
     }
   }
