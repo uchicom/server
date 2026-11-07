@@ -15,7 +15,7 @@ Java 25 以上が必要です。Maven Central で公開しています。
 <dependency>
 <groupId>com.uchicom</groupId>
 <artifactId>server</artifactId>
-<version>0.3.0</version>
+<version>0.4.0</version>
 </dependency>
 ```
 
