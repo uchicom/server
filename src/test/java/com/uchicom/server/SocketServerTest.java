@@ -520,7 +520,8 @@ class SocketServerTest {
               p.put(key, value);
               return new PoolSocketServer(p, f);
             },
-            factory);
+            factory,
+            serverLog);
     // 1件目を実行中にしておく
     Socket first = new Socket(InetAddress.getLoopbackAddress(), port);
     sockets.add(first);
@@ -530,6 +531,84 @@ class SocketServerTest {
     assertEquals(1, factory.executed.get());
     this.port = port;
     return (PoolSocketServer) server;
+  }
+
+  final CapturingLogger serverLog = new CapturingLogger();
+
+  /** 指定の理由を含むWARNINGが出力されていることを確認する. */
+  void assertWarned(String reason) {
+    assertTrue(
+        serverLog.records.stream()
+            .anyMatch(
+                r -> r.level() == System.Logger.Level.WARNING && r.message().contains(reason)),
+        serverLog.records.toString());
+  }
+
+  /** createServerProcessの失敗が連続しても、初回のみ詳細・以降は一定件数ごとに件数のみ出力され、復旧時に通知されることを確認する. */
+  @Test
+  void createFailuresAreThrottled() throws Exception {
+    server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    server.logger = captured;
+    server.acceptRetryWaitMillis = 1;
+    int failures = AbstractSocketServer.CREATE_FAILURE_LOG_INTERVAL * 2 + 1;
+    AtomicInteger count = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    server.factory =
+        (parameter, socket) -> {
+          if (count.getAndIncrement() < failures) {
+            throw new IllegalStateException("boom");
+          }
+          return echo.createServerProcess(parameter, socket);
+        };
+    java.net.ServerSocket serverSocket = new java.net.ServerSocket();
+    serverSocket.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+    server.serverSocket = serverSocket;
+    thread =
+        new Thread(
+            () -> {
+              try {
+                server.execute(serverSocket);
+              } catch (IOException e) {
+                // 無視
+              }
+            });
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < failures; i++) {
+      try (Socket s = new Socket(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort())) {
+        s.setSoTimeout(5000);
+        try {
+          s.getInputStream().read();
+        } catch (IOException e) {
+          // RSTも許容する
+        }
+      }
+    }
+    assertEquals('a', echo(serverSocket.getLocalPort(), 'a'));
+    // 初回(スタックトレース付き) + 100件目 + 200件目 + 復旧通知
+    assertEquals(4, captured.records.size(), captured.records.toString());
+    assertEquals("createServerProcess failed", captured.records.get(0).message());
+    assertTrue(captured.records.get(0).thrown() != null);
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
+    assertEquals(System.Logger.Level.INFO, captured.records.get(3).level());
+  }
+
+  /** 拒否が続いても、初回と一定件数ごとにしかログが出ないことを確認する. */
+  @Test
+  void rejectionsAreThrottled() throws Exception {
+    AbstractSocketServer local = new MultiSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    local.logger = captured;
+    int total = AbstractSocketServer.REJECT_LOG_INTERVAL * 2 + 1;
+    for (int i = 0; i < total; i++) {
+      local.logQueueTimeout(1000);
+    }
+    // 初回 + 100件目 + 200件目
+    assertEquals(3, captured.records.size());
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
   }
 
   int port;
@@ -555,6 +634,7 @@ class SocketServerTest {
     // 3件目は上限超過で閉じられる
     sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
     assertTrue(factory.closed[2].await(10, TimeUnit.SECONDS));
+    assertWarned("queue full");
     assertEquals(1, factory.closed[0].getCount());
     assertEquals(1, factory.closed[1].getCount());
     assertEquals(1, factory.executed.get());
@@ -589,6 +669,7 @@ class SocketServerTest {
     startBlockingPool(factory, "queueTimeout", "300");
     sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
     assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertWarned("queue wait timeout");
     // 実行中の1件目は、アイドルタイムアウト内のため閉じられない
     assertEquals(1, factory.closed[0].getCount());
     assertEquals(1, factory.executed.get());
@@ -606,7 +687,8 @@ class SocketServerTest {
               p.put("maxConnection", "1");
               return creator.apply(p, f);
             },
-            factory);
+            factory,
+            serverLog);
     sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
     for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
       Thread.sleep(10);
@@ -615,6 +697,7 @@ class SocketServerTest {
     // 2件目は上限超過で閉じられる
     sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
     assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertWarned("maxConnection exceeded");
     assertEquals(1, factory.closed[0].getCount());
     assertEquals(1, factory.executed.get());
     // 1件目が終了すると枠が解放され、3件目は処理される
