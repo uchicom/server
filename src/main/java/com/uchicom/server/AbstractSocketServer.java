@@ -82,8 +82,17 @@ public abstract class AbstractSocketServer implements Server {
     }
   }
 
-  /** アイドルタイムアウトの監視対象として登録して、処理を実行する. 処理終了時に監視対象から外す. */
+  /**
+   * 実行開始のフックを呼んでから、アイドルタイムアウトの監視対象として登録して、処理を実行する. 処理終了時に監視対象から外す.
+   *
+   * <p>実行待ちの間は監視対象外のため、待機時間で開始直後にタイムアウトされないよう、登録前に{@link ServerProcess#onStart()}を呼ぶ。
+   */
   protected void executeProcess(ServerProcess process) {
+    try {
+      process.onStart();
+    } catch (RuntimeException e) {
+      e.printStackTrace();
+    }
     processList.add(process);
     try {
       process.execute();
