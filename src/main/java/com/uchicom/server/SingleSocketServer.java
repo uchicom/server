@@ -15,7 +15,10 @@ public class SingleSocketServer extends AbstractSocketServer {
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
+      ServerProcess process = acceptProcess(serverSocket);
+      if (process == null) {
+        continue;
+      }
       executeProcess(process);
     }
   }
