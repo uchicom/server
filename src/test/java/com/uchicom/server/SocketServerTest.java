@@ -480,6 +480,59 @@ class SocketServerTest {
     }
   }
 
+  private ServerProcess countingProcess(AtomicInteger closed, AtomicInteger executed) {
+    return new ServerProcess() {
+      @Override
+      public long getLastTime() {
+        return System.currentTimeMillis();
+      }
+
+      @Override
+      public void forceClose() {
+        closed.incrementAndGet();
+      }
+
+      @Override
+      public void execute() {
+        executed.incrementAndGet();
+      }
+    };
+  }
+
+  /** shutdown済みのExecutorServiceに拒否された接続が、強制クローズされることを確認する. */
+  @Test
+  void submitRejectedForceCloses() throws Exception {
+    for (String type : new String[] {"pool", "virtual"}) {
+      Parameter parameter = parameter();
+      parameter.put("pool", "1");
+      AbstractSocketServer s =
+          type.equals("pool")
+              ? new PoolSocketServer(parameter, new TestServerProcessFactory())
+              : new VirtualSocketServer(parameter, new TestServerProcessFactory());
+      java.util.concurrent.ExecutorService exec =
+          type.equals("pool") ? ((PoolSocketServer) s).exec : ((VirtualSocketServer) s).exec;
+      exec.shutdownNow();
+      AtomicInteger closed = new AtomicInteger();
+      AtomicInteger executed = new AtomicInteger();
+      s.submitProcess(exec, countingProcess(closed, executed));
+      assertEquals(1, closed.get(), type);
+      assertEquals(0, executed.get(), type);
+    }
+  }
+
+  /** stop済みのサーバでexecuteProcessが始まった場合、実行せずに強制クローズされることを確認する. */
+  @Test
+  void executeProcessAfterStopForceCloses() throws Exception {
+    AbstractSocketServer s = new MultiSocketServer(parameter(), new TestServerProcessFactory());
+    s.alive = false;
+    AtomicInteger closed = new AtomicInteger();
+    AtomicInteger executed = new AtomicInteger();
+    s.executeProcess(countingProcess(closed, executed));
+    assertEquals(1, closed.get());
+    assertEquals(0, executed.get());
+    assertTrue(s.processList.isEmpty());
+  }
+
   /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
   @Test
   void forceCloseExceptionContinuesMonitoring() throws Exception {
