@@ -153,13 +153,23 @@ Server の種類
 
 - ロガー名: `com.uchicom.server`
 - `ERROR`: 異常(サーバの異常終了、accept の失敗、`ServerProcessFactory` での生成失敗、`forceClose()` の例外など)
-- `INFO`: accept が連続失敗した後の復旧通知
+- `WARNING`: 接続の拒否・破棄(`maxConnection` 超過、`queue` 満杯、キュー待ちタイムアウト)
+- `INFO`: accept / `ServerProcessFactory` での生成が連続失敗した後の復旧通知
 
 accept が連続して失敗する場合(fd 枯渇など)は、ログが溢れないよう間引きます。
 
 - 初回のみ、スタックトレース付きで出力します。
 - 以降は 100 件ごとに、連続失敗の件数と直近の例外のみを出力します。
 - accept が成功すると連続回数をリセットします(間引いた分がある場合は、`INFO` で復旧を通知します)。
+
+`ServerProcessFactory` での生成失敗(`createServerProcess` の例外)も同様に間引きます(初回のみスタックトレース付き、以降は 100 件ごと、成功でリセットし復旧を `INFO` で通知)。
+
+接続の拒否・破棄は、理由別に `WARNING` で出力します。件数が多い場合に溢れないよう、初回と累計 100 件ごと(件数付き)のみ出力します。
+
+- `maxConnection` 超過: `connection rejected: maxConnection exceeded`
+- `queue` 満杯(実行待ちの上限超過): `connection rejected: queue full or executor unavailable`
+- キュー待ちタイムアウト: `connection discarded: queue wait timeout`
+- `stop()` 後の拒否は想定内のためログしません。
 
 アイドルタイムアウト
 -----------------

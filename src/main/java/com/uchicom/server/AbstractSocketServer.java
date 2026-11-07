@@ -34,6 +34,12 @@ public abstract class AbstractSocketServer implements Server {
   /** accept失敗が連続した場合に、件数をログ出力する間隔(件数). */
   static final int ACCEPT_FAILURE_LOG_INTERVAL = 100;
 
+  /** 接続の拒否・破棄が続いた場合に、累計件数をログ出力する間隔(件数). */
+  static final int REJECT_LOG_INTERVAL = 100;
+
+  /** createServerProcess失敗が連続した場合に、件数をログ出力する間隔(件数). */
+  static final int CREATE_FAILURE_LOG_INTERVAL = 100;
+
   /** テストで差し替えられるよう、パッケージプライベートとしている. */
   Logger logger = System.getLogger(LOGGER_NAME);
 
@@ -42,6 +48,18 @@ public abstract class AbstractSocketServer implements Server {
 
   /** accept失敗の連続回数. acceptスレッドからのみ更新する. */
   private int acceptFailures;
+
+  /** createServerProcess失敗の連続回数. acceptスレッドからのみ更新する. */
+  private int createFailures;
+
+  /** maxConnection超過で拒否した累計件数. */
+  private final AtomicInteger rejectedByMaxConnection = new AtomicInteger();
+
+  /** queue満杯で拒否した累計件数. */
+  private final AtomicInteger rejectedByQueueFull = new AtomicInteger();
+
+  /** キュー待ちタイムアウトで破棄した累計件数. */
+  private final AtomicInteger discardedByQueueTimeout = new AtomicInteger();
 
   protected Parameter parameter;
   protected ServerProcessFactory factory;
@@ -142,6 +160,9 @@ public abstract class AbstractSocketServer implements Server {
       return true;
     }
     connections.decrementAndGet();
+    logRejected(
+        rejectedByMaxConnection,
+        "connection rejected: maxConnection exceeded (max=" + maxConnection + ")");
     forceCloseQuietly(process);
     return false;
   }
@@ -271,9 +292,11 @@ public abstract class AbstractSocketServer implements Server {
     }
     resetAcceptFailures();
     try {
-      return factory.createServerProcess(parameter, socket);
+      ServerProcess process = factory.createServerProcess(parameter, socket);
+      resetCreateFailures();
+      return process;
     } catch (RuntimeException e) {
-      logger.log(Level.ERROR, "createServerProcess failed", e);
+      logCreateFailure(e);
       try {
         socket.close();
       } catch (IOException ce) {
@@ -292,6 +315,45 @@ public abstract class AbstractSocketServer implements Server {
       logger.log(
           Level.ERROR, "accept failed {0} times in a row, last: {1}", acceptFailures, e.toString());
     }
+  }
+
+  /** createServerProcess失敗をログ出力する. 連続時は初回のみスタックトレース付きで出力し、以降は一定件数ごとに件数のみ出力する. */
+  private void logCreateFailure(RuntimeException e) {
+    createFailures++;
+    if (createFailures == 1) {
+      logger.log(Level.ERROR, "createServerProcess failed", e);
+    } else if (createFailures % CREATE_FAILURE_LOG_INTERVAL == 0) {
+      logger.log(
+          Level.ERROR,
+          "createServerProcess failed {0} times in a row, last: {1}",
+          createFailures,
+          e.toString());
+    }
+  }
+
+  /** createServerProcess成功時に連続失敗のカウントをリセットする. 間引いたログがある場合は復旧を通知する. */
+  private void resetCreateFailures() {
+    if (createFailures > 1) {
+      logger.log(Level.INFO, "createServerProcess recovered after {0} failures", createFailures);
+    }
+    createFailures = 0;
+  }
+
+  /** 接続の拒否・破棄をWARNINGでログ出力する. 初回と一定件数ごと(累計)のみ出力する. */
+  private void logRejected(AtomicInteger counter, String reason) {
+    int count = counter.incrementAndGet();
+    if (count == 1) {
+      logger.log(Level.WARNING, reason);
+    } else if (count % REJECT_LOG_INTERVAL == 0) {
+      logger.log(Level.WARNING, "{0} (total {1})", reason, count);
+    }
+  }
+
+  /** キュー待ちタイムアウトで接続を破棄したことをログ出力する. */
+  protected void logQueueTimeout(long queueTimeout) {
+    logRejected(
+        discardedByQueueTimeout,
+        "connection discarded: queue wait timeout (" + queueTimeout + "ms)");
   }
 
   /** accept成功時に連続失敗のカウントをリセットする. 間引いたログがある場合は復旧を通知する. */
@@ -360,6 +422,10 @@ public abstract class AbstractSocketServer implements Server {
     } catch (RejectedExecutionException e) {
       if (counted) {
         releaseConnection();
+      }
+      // stop後の拒否は想定内のためログしない
+      if (alive) {
+        logRejected(rejectedByQueueFull, "connection rejected: queue full or executor unavailable");
       }
       forceCloseQuietly(process);
     }
