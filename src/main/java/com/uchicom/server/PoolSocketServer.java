@@ -4,6 +4,7 @@ package com.uchicom.server;
 import com.uchicom.util.Parameter;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,11 @@ public class PoolSocketServer extends AbstractSocketServer {
               t.setDaemon(true);
               return t;
             });
+  }
+
+  @Override
+  protected List<String> requiredKeys() {
+    return List.of("port", "back", "pool");
   }
 
   /** 実行待ちの時間が{@code queueTimeout}を超えた接続を、キューから取り除いて強制クローズする. */
