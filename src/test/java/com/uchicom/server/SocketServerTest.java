@@ -339,6 +339,132 @@ class SocketServerTest {
     assertIdleForceClosedThenNext(PoolSocketServer::new);
   }
 
+  /** 接続順にforceCloseを記録し、実行は共有のlatchが解放されるまでブロックするFactory. */
+  static class BlockingFactory implements ServerProcessFactory {
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch[] closed = {
+      new CountDownLatch(1), new CountDownLatch(1), new CountDownLatch(1)
+    };
+    final AtomicInteger created = new AtomicInteger();
+    final AtomicInteger executed = new AtomicInteger();
+
+    @Override
+    public ServerProcess createServerProcess(Parameter parameter, java.net.Socket socket) {
+      final int index = created.getAndIncrement();
+      return new ServerProcess() {
+        @Override
+        public long getLastTime() {
+          return System.currentTimeMillis();
+        }
+
+        @Override
+        public void forceClose() {
+          closed[index].countDown();
+          try {
+            socket.close();
+          } catch (IOException e) {
+            // 無視
+          }
+        }
+
+        @Override
+        public void execute() {
+          executed.incrementAndGet();
+          try {
+            release.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      };
+    }
+  }
+
+  PoolSocketServer startBlockingPool(BlockingFactory factory, String key, String value)
+      throws Exception {
+    int port =
+        start(
+            (p, f) -> {
+              p.put("pool", "1");
+              p.put("timeout", "60000");
+              p.put(key, value);
+              return new PoolSocketServer(p, f);
+            },
+            factory);
+    // 1件目を実行中にしておく
+    Socket first = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(first);
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(1, factory.executed.get());
+    this.port = port;
+    return (PoolSocketServer) server;
+  }
+
+  int port;
+  final java.util.List<Socket> sockets = new java.util.ArrayList<>();
+
+  @AfterEach
+  void closeSockets() throws Exception {
+    for (Socket socket : sockets) {
+      socket.close();
+    }
+  }
+
+  /** 実行待ちの上限を超えた接続だけが、受け付け直後に閉じられることを確認する. */
+  @Test
+  void poolQueueLimit() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queue", "1");
+    // 2件目は実行待ちに入る
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    // 3件目は上限超過で閉じられる
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[2].await(10, TimeUnit.SECONDS));
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.closed[1].getCount());
+    assertEquals(1, factory.executed.get());
+    // 解放すると、実行待ちだった2件目が処理される
+    factory.release.countDown();
+    for (int i = 0; i < 500 && factory.executed.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(2, factory.executed.get());
+  }
+
+  /** 実行待ちが上限なしの場合(既定)は、閉じられないことを確認する. */
+  @Test
+  void poolQueueUnlimitedByDefault() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queueTimeout", "60000");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 3; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(3, factory.created.get());
+    assertFalse(factory.closed[1].await(500, TimeUnit.MILLISECONDS));
+    assertFalse(factory.closed[2].await(10, TimeUnit.MILLISECONDS));
+    factory.release.countDown();
+  }
+
+  /** 実行待ちのタイムアウトを超えた接続だけが閉じられることを確認する. */
+  @Test
+  void poolQueueTimeout() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queueTimeout", "300");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    // 実行中の1件目は、アイドルタイムアウト内のため閉じられない
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.executed.get());
+    factory.release.countDown();
+  }
+
   @Test
   void virtualIdleTimeout() throws Exception {
     assertIdleForceClosedThenNext(VirtualSocketServer::new);

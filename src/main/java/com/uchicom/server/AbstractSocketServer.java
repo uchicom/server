@@ -51,6 +51,7 @@ public abstract class AbstractSocketServer implements Server {
         new Thread() {
           public void run() {
             while (alive) {
+              checkQueued(System.currentTimeMillis());
               for (ServerProcess process : processList) {
                 long now = System.currentTimeMillis();
                 // 最終アクセス時刻と実行開始時刻のうち新しい方を基準にする
@@ -114,6 +115,9 @@ public abstract class AbstractSocketServer implements Server {
       unregister(process);
     }
   }
+
+  /** 監視スレッドから定期的に呼ばれる. 実行待ちの接続を監視する場合にオーバーライドする. 既定では何もしない. */
+  protected void checkQueued(long now) {}
 
   private void unregister(ServerProcess process) {
     processList.remove(process);
@@ -183,6 +187,9 @@ public abstract class AbstractSocketServer implements Server {
   protected class ProcessTask implements Runnable {
     final ServerProcess process;
 
+    /** 実行待ちに入った時刻. */
+    final long queuedTime = System.currentTimeMillis();
+
     ProcessTask(ServerProcess process) {
       this.process = process;
     }
@@ -202,7 +209,7 @@ public abstract class AbstractSocketServer implements Server {
     }
   }
 
-  private void forceCloseQuietly(ServerProcess process) {
+  protected void forceCloseQuietly(ServerProcess process) {
     try {
       process.forceClose();
     } catch (RuntimeException e) {
