@@ -30,7 +30,11 @@ public class VirtualSocketServer extends AbstractSocketServer {
       if (process == null) {
         continue;
       }
-      submitProcess(exec, process);
+      // 上限に達している場合は、acquireConnectionで接続をクローズする
+      if (!acquireConnection(process)) {
+        continue;
+      }
+      submitProcess(exec, process, true);
     }
   }
 }

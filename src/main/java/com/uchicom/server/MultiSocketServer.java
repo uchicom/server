@@ -19,10 +19,18 @@ public class MultiSocketServer extends AbstractSocketServer {
       if (process == null) {
         continue;
       }
+      // 上限に達している場合は、acquireConnectionで接続をクローズする
+      if (!acquireConnection(process)) {
+        continue;
+      }
       Thread thread =
           new Thread() {
             public void run() {
-              executeProcess(process);
+              try {
+                executeProcess(process);
+              } finally {
+                releaseConnection();
+              }
             }
           };
       thread.setDaemon(true);

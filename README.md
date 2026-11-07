@@ -96,6 +96,7 @@ Parameter のキー一覧
 | `timeout` | 任意 | アイドルタイムアウト(ミリ秒)。未指定時は10000 |
 | `queue` | 任意 | `PoolSocketServer` の実行待ち接続数の上限。未指定時は無制限(従来どおり)。上限を超えた接続は受け付け直後にクローズする |
 | `queueTimeout` | 任意 | `PoolSocketServer` の実行待ちタイムアウト(ミリ秒)。未指定時は `timeout` の値(それも未指定なら10000) |
+| `maxConnection` | 任意 | `MultiSocketServer` / `VirtualSocketServer` の最大同時接続数。未指定時は上限なし(従来どおり)。上限に達している間に受け付けた接続は、受け付け直後に `ServerProcess#forceClose()` でクローズし、既存の接続には影響しない |
 | `ssl` | 任意 | 指定するとSSL(TLS)で待ち受ける。以下のキーを使用する |
 | `keyStorePass` | `ssl` 時に必須 | キーストアのパスワード。未指定だとエラー |
 | `keyStoreName` | `ssl` 時に必須 | キーストアのファイルパス。未指定だとエラー |
@@ -112,7 +113,7 @@ Server の種類
 | Server | 処理方式 | 用途・特徴 |
 |---|---|---|
 | `SingleSocketServer` | 受付スレッドで1接続ずつ順番に処理 | 同時接続を1つに限定したい場合。処理中は他の接続が待たされる |
-| `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。接続数に上限がなく、多数接続ではスレッドが増える |
+| `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。既定では接続数に上限がなく、多数接続ではスレッドが増える(`maxConnection` で制限可能) |
 | `PoolSocketServer` | `pool` 個の固定スレッドプールで処理 | 同時処理数を制限したい場合。`pool` を超える接続はプールの空きを待つ |
 | `VirtualSocketServer` | 接続ごとに仮想スレッドを生成 | 多数の接続をブロッキング I/O で扱いたい場合 |
 

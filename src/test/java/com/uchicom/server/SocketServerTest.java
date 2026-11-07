@@ -465,6 +465,77 @@ class SocketServerTest {
     factory.release.countDown();
   }
 
+  /** 最大同時接続数を超えた接続だけが閉じられ、既存の接続は影響を受けず、解放後は再び受け付けることを確認する. */
+  void assertMaxConnection(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              return creator.apply(p, f);
+            },
+            factory);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(1, factory.executed.get());
+    // 2件目は上限超過で閉じられる
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.executed.get());
+    // 1件目が終了すると枠が解放され、3件目は処理される
+    factory.release.countDown();
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    Thread.sleep(300);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(2, factory.executed.get());
+    assertEquals(1, factory.closed[2].getCount());
+  }
+
+  @Test
+  void multiMaxConnection() throws Exception {
+    assertMaxConnection(MultiSocketServer::new);
+  }
+
+  @Test
+  void virtualMaxConnection() throws Exception {
+    assertMaxConnection(VirtualSocketServer::new);
+  }
+
+  /** maxConnection未指定時は、複数の同時接続がすべて処理されることを確認する. */
+  void assertMaxConnectionUnlimitedByDefault(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port = start(creator, factory);
+    for (int i = 0; i < 3; i++) {
+      sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    }
+    for (int i = 0; i < 500 && factory.executed.get() < 3; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(3, factory.executed.get());
+    factory.release.countDown();
+  }
+
+  @Test
+  void multiMaxConnectionUnlimitedByDefault() throws Exception {
+    assertMaxConnectionUnlimitedByDefault(MultiSocketServer::new);
+  }
+
+  @Test
+  void virtualMaxConnectionUnlimitedByDefault() throws Exception {
+    assertMaxConnectionUnlimitedByDefault(VirtualSocketServer::new);
+  }
+
   @Test
   void virtualIdleTimeout() throws Exception {
     assertIdleForceClosedThenNext(VirtualSocketServer::new);
