@@ -160,6 +160,33 @@ public abstract class AbstractSocketServer implements Server {
     forceCloseRemaining();
   }
 
+  /** ExecutorServiceへ渡す処理. 未着手のまま破棄された場合に、対象のServerProcessを特定できるよう保持する. */
+  protected class ProcessTask implements Runnable {
+    final ServerProcess process;
+
+    ProcessTask(ServerProcess process) {
+      this.process = process;
+    }
+
+    @Override
+    public void run() {
+      executeProcess(process);
+    }
+  }
+
+  /** shutdownNow()で未着手のまま破棄されたタスクのServerProcessを強制クローズする. */
+  protected void forceCloseDiscarded(List<Runnable> discarded) {
+    for (Runnable task : discarded) {
+      if (task instanceof ProcessTask processTask) {
+        try {
+          processTask.process.forceClose();
+        } catch (RuntimeException e) {
+          e.printStackTrace();
+        }
+      }
+    }
+  }
+
   /** stop後に残った接続を強制クローズする. 監視スレッドは停止しているため、タイムアウトを待たずに閉じる. */
   protected void forceCloseRemaining() {
     for (ServerProcess process : processList) {
