@@ -3,6 +3,8 @@ package com.uchicom.server;
 
 import com.uchicom.util.Parameter;
 import java.io.IOException;
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -24,6 +26,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author uchicom: Shigeki Uchiyama
  */
 public abstract class AbstractSocketServer implements Server {
+  /** ロガー名. */
+  static final String LOGGER_NAME = "com.uchicom.server";
+
+  /** accept失敗が連続した場合に、件数をログ出力する間隔(件数). */
+  static final int ACCEPT_FAILURE_LOG_INTERVAL = 100;
+
+  /** テストで差し替えられるよう、パッケージプライベートとしている. */
+  Logger logger = System.getLogger(LOGGER_NAME);
+
+  /** accept失敗後の待機時間(ミリ秒). テストで短縮できるよう、パッケージプライベートとしている. */
+  volatile long acceptRetryWaitMillis = 100;
+
+  /** accept失敗の連続回数. acceptスレッドからのみ更新する. */
+  private int acceptFailures;
+
   protected Parameter parameter;
   protected ServerProcessFactory factory;
 
@@ -88,7 +105,7 @@ public abstract class AbstractSocketServer implements Server {
                   try {
                     process.forceClose();
                   } catch (RuntimeException e) {
-                    e.printStackTrace();
+                    logger.log(Level.ERROR, "forceClose failed", e);
                   }
                 }
               }
@@ -112,7 +129,7 @@ public abstract class AbstractSocketServer implements Server {
     } catch (Exception e) {
       // stopによるソケットクローズで発生する例外は正常終了として扱う
       if (alive) {
-        e.printStackTrace();
+        logger.log(Level.ERROR, "server terminated abnormally", e);
       }
     } finally {
       // 異常終了した場合も含めて、監視スレッドなどの後始末を行う
@@ -167,27 +184,47 @@ public abstract class AbstractSocketServer implements Server {
       if (!alive || serverSocket.isClosed()) {
         throw e;
       }
-      e.printStackTrace();
+      logAcceptFailure(e);
       // fd枯渇などでの高負荷なリトライを避ける
       try {
-        Thread.sleep(100);
+        Thread.sleep(acceptRetryWaitMillis);
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         throw e;
       }
       return null;
     }
+    resetAcceptFailures();
     try {
       return factory.createServerProcess(parameter, socket);
     } catch (RuntimeException e) {
-      e.printStackTrace();
+      logger.log(Level.ERROR, "createServerProcess failed", e);
       try {
         socket.close();
       } catch (IOException ce) {
-        ce.printStackTrace();
+        logger.log(Level.ERROR, "socket close failed", ce);
       }
       return null;
     }
+  }
+
+  /** accept失敗をログ出力する. 連続時は初回のみスタックトレース付きで出力し、以降は一定件数ごとに件数のみ出力する. */
+  private void logAcceptFailure(IOException e) {
+    acceptFailures++;
+    if (acceptFailures == 1) {
+      logger.log(Level.ERROR, "accept failed", e);
+    } else if (acceptFailures % ACCEPT_FAILURE_LOG_INTERVAL == 0) {
+      logger.log(
+          Level.ERROR, "accept failed {0} times in a row, last: {1}", acceptFailures, e.toString());
+    }
+  }
+
+  /** accept成功時に連続失敗のカウントをリセットする. 間引いたログがある場合は復旧を通知する. */
+  private void resetAcceptFailures() {
+    if (acceptFailures > 1) {
+      logger.log(Level.INFO, "accept recovered after {0} failures", acceptFailures);
+    }
+    acceptFailures = 0;
   }
 
   protected abstract void execute(ServerSocket serverSocket) throws IOException;
@@ -203,7 +240,7 @@ public abstract class AbstractSocketServer implements Server {
       try {
         serverSocket.close();
       } catch (IOException e) {
-        e.printStackTrace();
+        logger.log(Level.ERROR, "server socket close failed", e);
       }
     }
     forceCloseRemaining();
@@ -257,7 +294,7 @@ public abstract class AbstractSocketServer implements Server {
     try {
       process.forceClose();
     } catch (RuntimeException e) {
-      e.printStackTrace();
+      logger.log(Level.ERROR, "forceClose failed", e);
     }
   }
 
@@ -268,7 +305,7 @@ public abstract class AbstractSocketServer implements Server {
         try {
           processTask.process.forceClose();
         } catch (RuntimeException e) {
-          e.printStackTrace();
+          logger.log(Level.ERROR, "forceClose failed", e);
         }
       }
     }
@@ -281,7 +318,7 @@ public abstract class AbstractSocketServer implements Server {
       try {
         process.forceClose();
       } catch (RuntimeException e) {
-        e.printStackTrace();
+        logger.log(Level.ERROR, "forceClose failed", e);
       }
     }
   }
