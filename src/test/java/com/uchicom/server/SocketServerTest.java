@@ -337,6 +337,83 @@ class SocketServerTest {
     assertIdleForceClosedThenNext(VirtualSocketServer::new);
   }
 
+  /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
+  @Test
+  void forceCloseExceptionContinuesMonitoring() throws Exception {
+    PrintStream originalErr = System.err;
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+    System.setErr(new PrintStream(err, true));
+    try {
+      AtomicInteger count = new AtomicInteger();
+      AtomicInteger throwingCalls = new AtomicInteger();
+      CountDownLatch secondClosed = new CountDownLatch(1);
+      ServerProcessFactory factory =
+          (parameter, socket) ->
+              new ServerProcess() {
+                final int index = count.getAndIncrement();
+                final long start = System.currentTimeMillis();
+
+                @Override
+                public long getLastTime() {
+                  return start;
+                }
+
+                @Override
+                public void forceClose() {
+                  if (index == 0) {
+                    throwingCalls.incrementAndGet();
+                    throw new IllegalStateException("closeboom");
+                  }
+                  try {
+                    socket.close();
+                  } catch (IOException e) {
+                    // 無視
+                  }
+                }
+
+                @Override
+                public void execute() {
+                  try (socket) {
+                    socket.getInputStream().read();
+                  } catch (IOException e) {
+                    // 強制クローズによる例外
+                  } finally {
+                    if (index == 1) {
+                      secondClosed.countDown();
+                    }
+                  }
+                }
+              };
+      Parameter parameter = parameter();
+      parameter.put("timeout", "300");
+      server = new MultiSocketServer(parameter, factory);
+      thread = new Thread(server::execute);
+      thread.setDaemon(true);
+      thread.start();
+      for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+        Thread.sleep(10);
+      }
+      int port = server.serverSocket.getLocalPort();
+      try (Socket first = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        // 最初の接続のforceClose()が例外を投げるまで待つ
+        for (int i = 0; i < 500 && throwingCalls.get() == 0; i++) {
+          Thread.sleep(20);
+        }
+        assertEquals(1, throwingCalls.get());
+        try (Socket second = new Socket(InetAddress.getLoopbackAddress(), port)) {
+          assertTrue(secondClosed.await(10, TimeUnit.SECONDS));
+        }
+        // 例外を投げたプロセスは監視対象から外れ、再度forceClose()されない
+        Thread.sleep(1500);
+        assertEquals(1, throwingCalls.get());
+        assertTrue(server.monitor.isAlive());
+      }
+    } finally {
+      System.setErr(originalErr);
+    }
+    assertTrue(err.toString().contains("closeboom"));
+  }
+
   @Test
   void stopBeforeExecute() throws Exception {
     server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
