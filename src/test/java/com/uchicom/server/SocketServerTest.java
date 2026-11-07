@@ -744,6 +744,65 @@ class SocketServerTest {
     assertMaxConnectionUnlimitedByDefault(MultiSocketServer::new);
   }
 
+  /** スレッド生成が失敗しても、サーバが停止せず、枠が解放され、その接続がcloseされることを確認する. */
+  @Test
+  void multiThreadStartFailureContinues() throws Exception {
+    AtomicInteger starts = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    CountDownLatch failedClosed = new CountDownLatch(1);
+    AtomicInteger created = new AtomicInteger();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              MultiSocketServer s =
+                  new MultiSocketServer(p, f) {
+                    @Override
+                    void startThread(Thread t) {
+                      if (starts.getAndIncrement() == 0) {
+                        throw new OutOfMemoryError("unable to create native thread");
+                      }
+                      super.startThread(t);
+                    }
+                  };
+              s.acceptRetryWaitMillis = 10;
+              return s;
+            },
+            (parameter, socket) -> {
+              if (created.getAndIncrement() == 0) {
+                return new ServerProcess() {
+                  @Override
+                  public long getLastTime() {
+                    return System.currentTimeMillis();
+                  }
+
+                  @Override
+                  public void forceClose() {
+                    failedClosed.countDown();
+                  }
+
+                  @Override
+                  public void execute() {}
+                };
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(failedClosed.await(10, TimeUnit.SECONDS));
+    // maxConnection=1でも、枠が解放されているので次の接続が処理される
+    assertEquals('a', echo(port, 'a'));
+    assertTrue(thread.isAlive());
+    assertTrue(
+        serverLog.records.stream()
+            .anyMatch(
+                r ->
+                    r.level() == System.Logger.Level.ERROR
+                        && r.message().contains("thread start failed")),
+        serverLog.records.toString());
+  }
+
   @Test
   void virtualMaxConnectionUnlimitedByDefault() throws Exception {
     assertMaxConnectionUnlimitedByDefault(VirtualSocketServer::new);
