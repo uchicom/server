@@ -178,20 +178,25 @@ public abstract class AbstractSocketServer implements Server {
         new Thread() {
           public void run() {
             while (alive) {
-              checkQueued(System.currentTimeMillis());
-              for (ServerProcess process : processList) {
-                long now = System.currentTimeMillis();
-                // 最終アクセス時刻と実行開始時刻のうち新しい方を基準にする
-                long base = Math.max(process.getLastTime(), startTimes.getOrDefault(process, 0L));
-                if (now - base > timeout) {
-                  // forceClose()が例外を投げても、繰り返し呼ばれないよう先に削除して監視を継続する
-                  unregister(process);
-                  try {
-                    process.forceClose();
-                  } catch (RuntimeException e) {
-                    logger.log(Level.ERROR, "forceClose failed", e);
+              try {
+                checkQueued(System.currentTimeMillis());
+                for (ServerProcess process : processList) {
+                  long now = System.currentTimeMillis();
+                  // 最終アクセス時刻と実行開始時刻のうち新しい方を基準にする
+                  long base = Math.max(process.getLastTime(), startTimes.getOrDefault(process, 0L));
+                  if (now - base > timeout) {
+                    // forceClose()が例外を投げても、繰り返し呼ばれないよう先に削除して監視を継続する
+                    unregister(process);
+                    try {
+                      process.forceClose();
+                    } catch (RuntimeException e) {
+                      logger.log(Level.ERROR, "forceClose failed", e);
+                    }
                   }
                 }
+              } catch (RuntimeException e) {
+                // 想定外の例外で監視スレッドが終了しないよう、ログ出力して次の周回を継続する
+                logger.log(Level.ERROR, "monitor loop failed", e);
               }
               try {
                 Thread.sleep(1000);

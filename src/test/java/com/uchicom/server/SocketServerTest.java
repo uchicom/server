@@ -1136,6 +1136,37 @@ class SocketServerTest {
             .anyMatch(r -> r.thrown() != null && "closeboom".equals(r.thrown().getMessage())));
   }
 
+  /** checkQueued()が例外を投げても、ログ出力して監視が継続されることを確認する. */
+  @Test
+  void checkQueuedExceptionContinuesMonitoring() throws Exception {
+    CapturingLogger captured = new CapturingLogger();
+    AtomicInteger calls = new AtomicInteger();
+    CountDownLatch recovered = new CountDownLatch(1);
+    start(
+        (p, f) ->
+            new MultiSocketServer(p, f) {
+              @Override
+              protected void checkQueued(long now) {
+                if (calls.incrementAndGet() == 1) {
+                  throw new IllegalStateException("queueboom");
+                }
+                recovered.countDown();
+              }
+            },
+        new TestServerProcessFactory(),
+        captured);
+    // 例外後の周回でもcheckQueued()が呼ばれ続ける
+    assertTrue(recovered.await(10, TimeUnit.SECONDS));
+    assertTrue(server.monitor.isAlive());
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "queueboom".equals(r.thrown().getMessage())));
+    // stop()による終了は従来どおり
+    server.stop();
+    server.monitor.join(5000);
+    assertFalse(server.monitor.isAlive());
+  }
+
   /** 待機した接続が実行開始の直後にforceClose()されないことを確認する. */
   @Test
   void queuedProcessIsNotTimedOutImmediately() throws Exception {
