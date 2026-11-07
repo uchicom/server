@@ -123,7 +123,7 @@ public abstract class AbstractSocketServer implements Server {
     thread.start();
     try (ServerSocket serverSocket = new ServerSocketFactory(parameter).createServerSocket(); ) {
       serverSocket.setReuseAddress(true);
-      serverSocket.bind(new InetSocketAddress(parameter.getInt("port")), parameter.getInt("back"));
+      serverSocket.bind(createBindAddress(), parameter.getInt("back"));
       this.serverSocket = serverSocket;
       execute(serverSocket);
     } catch (Exception e) {
@@ -135,6 +135,16 @@ public abstract class AbstractSocketServer implements Server {
       // 異常終了した場合も含めて、監視スレッドなどの後始末を行う
       stop();
     }
+  }
+
+  /** bindするアドレスを生成する. parameterの"host"未指定時は全インターフェースで待ち受ける. */
+  InetSocketAddress createBindAddress() {
+    int port = parameter.getInt("port");
+    String host = parameter.get("host");
+    if (host == null || host.isEmpty()) {
+      return new InetSocketAddress(port);
+    }
+    return new InetSocketAddress(host, port);
   }
 
   /**
