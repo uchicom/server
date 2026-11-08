@@ -168,6 +168,53 @@ Server の種類
 - `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdownNow()` を呼び、実行中のタスクを interrupt し、未着手のタスクを破棄します。
 - `PoolSocketServer` のスレッドはデーモンスレッドです。`MultiSocketServer` の接続スレッドもデーモンスレッドのため、JVM は `stop()` 後に終了できます。
 
+稼働状況(status)
+-----------------
+
+`Server#status()` は、稼働状況を複数行の文字列で返します(ロックは取らないため、各値は多少ずれることがあります。停止後や未起動でも例外になりません)。
+`Server` インターフェースでは default メソッド(既定は `toString()`)のため、既存の実装は壊れません。
+
+```
+状態: 待機中
+処理中の接続数: 3
+実行待ち数: 0
+拒否・破棄の累計: maxConnection超過=0, queue満杯=0, キュー待ちタイムアウト=0
+設定: port=8080, pool=4, queue=10, timeout=10000
+```
+
+- 状態: `待機中` / `停止中` / `グレースフル停止の待機中`
+- 実行待ち数は `PoolSocketServer` のみ出力します。
+- 設定は、指定されたキーのみ(`port` / `host` / `pool` / `queue` / `maxConnection` / `timeout`)出力します。
+- `toString()` はログやデバッガー向けの短い1行です(例: `MultiSocketServer[port=8080, alive=true, connections=12]`)。
+
+### plate の status コマンドから呼ぶ場合
+
+plate は設定ファイルで static メソッドの main / shutdown を指定できます。アプリ側の static フィールドに `Server` を保持し、`String` を返す static メソッド `getStatus()` を用意すると、plate の `status` コマンドで表示できます。
+クラスローダーをまたぐ可能性があるため、返り値は型を持たない `String` にしてください。
+
+```java
+public class EchoMain {
+	private static volatile Server server;
+
+	public static void main(String[] args) {
+		server = new MultiSocketServer(new Parameter(args), new EchoFactory());
+		server.execute();
+	}
+
+	public static void shutdown() {
+		Server s = server;
+		if (s != null) {
+			s.stop();
+		}
+	}
+
+	public static String getStatus() {
+		Server s = server;
+		return s == null ? "not running" : s.status();
+	}
+}
+```
+
 ログ
 -----------------
 

@@ -412,6 +412,69 @@ public abstract class AbstractSocketServer implements Server {
 
   protected abstract void execute(ServerSocket serverSocket) throws IOException;
 
+  /** 実行待ちの接続数. 実行待ちがない種類のサーバでは-1(statusに出力しない). */
+  protected int queuedCount() {
+    return -1;
+  }
+
+  /** 状態の表示名. */
+  private String stateText() {
+    if (alive) {
+      return "待機中";
+    }
+    return draining ? "グレースフル停止の待機中" : "停止中";
+  }
+
+  /**
+   * 稼働状況を複数行の文字列で返す. ロックは取らず、各値は個別に読むため、多少のずれは許容する. 停止後や未起動でも例外にならない.
+   *
+   * <p>状態、処理中の接続数、実行待ち数({@link PoolSocketServer}のみ)、拒否・破棄の累計、設定の要約を返す。
+   */
+  @Override
+  public String status() {
+    StringBuilder sb = new StringBuilder();
+    sb.append("状態: ").append(stateText()).append('\n');
+    sb.append("処理中の接続数: ").append(processList.size()).append('\n');
+    int queued = queuedCount();
+    if (queued >= 0) {
+      sb.append("実行待ち数: ").append(queued).append('\n');
+    }
+    sb.append("拒否・破棄の累計: maxConnection超過=")
+        .append(rejectedByMaxConnection.get())
+        .append(", queue満杯=")
+        .append(rejectedByQueueFull.get())
+        .append(", キュー待ちタイムアウト=")
+        .append(discardedByQueueTimeout.get())
+        .append('\n');
+    sb.append("設定: ");
+    String[] keys = {"port", "host", "pool", "queue", "maxConnection", "timeout"};
+    boolean first = true;
+    for (String key : keys) {
+      if (!parameter.is(key)) {
+        continue;
+      }
+      if (!first) {
+        sb.append(", ");
+      }
+      sb.append(key).append('=').append(parameter.get(key));
+      first = false;
+    }
+    return sb.toString();
+  }
+
+  /** ログやデバッガー向けの短い1行. 例: {@code MultiSocketServer[port=8080, alive=true, connections=12]} */
+  @Override
+  public String toString() {
+    return getClass().getSimpleName()
+        + "[port="
+        + parameter.get("port")
+        + ", alive="
+        + alive
+        + ", connections="
+        + processList.size()
+        + "]";
+  }
+
   @Override
   public void stop() {
     alive = false;

@@ -31,4 +31,15 @@ public interface Server {
   public default void stop(long timeoutMillis) {
     stop();
   }
+
+  /**
+   * 稼働状況を文字列で返す. 外部のツール(plateのstatusコマンドなど)から、クラスローダーをまたいでも扱えるよう型を持たない文字列とする.
+   *
+   * <p>既存の実装を壊さないよう、既定は{@link #toString()}を返す。
+   *
+   * @return 稼働状況(複数行になることがある)
+   */
+  public default String status() {
+    return toString();
+  }
 }
