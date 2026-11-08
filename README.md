@@ -161,6 +161,10 @@ Server の種類
 
 - `stop()` は `alive` を false にし、サーバソケットを閉じて `accept()` を中断させます。`execute()` はその後に戻ります。
 - `stop()` は監視スレッドを停止した後、残っている接続をすべて `ServerProcess#forceClose()` で即時に強制クローズします(タイムアウトを待ちません)。`forceClose()` が例外を投げても、残りの接続のクローズは継続します。
+- `stop(long timeoutMillis)` はグレースフル停止です。新規の接続受付を止め、処理中・実行待ちの接続が終わるのを最大 `timeoutMillis` ミリ秒待ち(全接続が終わった時点で打ち切り)、期限後に残った接続を `forceClose()` で強制クローズして `stop()` と同じ後始末を行います。
+- 呼び出したスレッドをブロックします。`execute()` は待機中に戻ることがあります。
+- 待機中もアイドルタイムアウト(`timeout`)の監視は継続します。
+- `timeoutMillis` が 0 以下なら `stop()` と同じです。`Server` インターフェースでは default メソッド(既定は `stop()` と同じ)のため、既存の実装は壊れません。
 - `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdownNow()` を呼び、実行中のタスクを interrupt し、未着手のタスクを破棄します。
 - `PoolSocketServer` のスレッドはデーモンスレッドです。`MultiSocketServer` の接続スレッドもデーモンスレッドのため、JVM は `stop()` 後に終了できます。
 

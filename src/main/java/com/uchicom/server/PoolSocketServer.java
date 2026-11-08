@@ -49,6 +49,7 @@ public class PoolSocketServer extends AbstractSocketServer {
       ProcessTask processTask = (ProcessTask) task;
       // 取り除けた場合のみ未着手。実行開始済みなら何もしない
       if (now - processTask.queuedTime > queueTimeout && exec.getQueue().remove(task)) {
+        taskRemoved();
         logQueueTimeout(queueTimeout);
         forceCloseQuietly(processTask.process);
       }

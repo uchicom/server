@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -72,6 +73,12 @@ public abstract class AbstractSocketServer implements Server {
   protected volatile ServerSocket serverSocket;
   protected volatile Thread monitor;
   volatile boolean alive = true;
+
+  /** グレースフル停止の待機中true. 待機中も監視スレッド(アイドルタイムアウト)を継続させるために使う. */
+  volatile boolean draining;
+
+  /** ExecutorServiceへ投入済みで、未完了のタスク数. */
+  private final AtomicInteger inFlight = new AtomicInteger();
 
   /** アイドルタイムアウトの既定値(ミリ秒). */
   static final int DEFAULT_TIMEOUT = 10 * 1000;
@@ -177,7 +184,7 @@ public abstract class AbstractSocketServer implements Server {
     Thread thread =
         new Thread() {
           public void run() {
-            while (alive) {
+            while (alive || draining) {
               try {
                 checkQueued(System.currentTimeMillis());
                 for (ServerProcess process : processList) {
@@ -222,8 +229,11 @@ public abstract class AbstractSocketServer implements Server {
         throw new IllegalStateException("server terminated abnormally", e);
       }
     } finally {
-      // 異常終了した場合も含めて、監視スレッドなどの後始末を行う
-      stop();
+      // 異常終了した場合も含めて、監視スレッドなどの後始末を行う.
+      // グレースフル停止の待機中は、待機後にstop(long)が後始末を行う
+      if (!draining) {
+        stop();
+      }
     }
   }
 
@@ -408,14 +418,59 @@ public abstract class AbstractSocketServer implements Server {
     if (monitor != null) {
       monitor.interrupt();
     }
-    if (serverSocket != null) {
+    closeServerSocket();
+    forceCloseRemaining();
+  }
+
+  /**
+   * グレースフル停止. 新規のacceptを止めて、処理中の接続の終了を待ち、期限後に残った接続を強制クローズする.
+   *
+   * <p>待機中もアイドルタイムアウトの監視は継続する。全接続が終了した時点で待機を打ち切る。 呼び出したスレッドをブロックし、戻る時点で{@link
+   * #stop()}と同じ後始末が完了している。 {@link #execute()}は待機中に戻ることがある。 {@code timeoutMillis}が0以下の場合は{@link
+   * #stop()}と同じ。
+   */
+  @Override
+  public void stop(long timeoutMillis) {
+    if (timeoutMillis <= 0) {
+      stop();
+      return;
+    }
+    // execute()の後始末(stop())が待機中に走らないよう、alive=falseより先にdrainingを立てる
+    draining = true;
+    alive = false;
+    closeServerSocket();
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+    try {
+      while (!isIdle() && System.nanoTime() < deadline) {
+        Thread.sleep(10);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } finally {
+      draining = false;
+      stop();
+    }
+  }
+
+  /** 処理中・実行待ち・起動待ちの接続がない場合true. */
+  private boolean isIdle() {
+    return processList.isEmpty() && inFlight.get() == 0 && connections.get() == 0;
+  }
+
+  private void closeServerSocket() {
+    ServerSocket socket = this.serverSocket;
+    if (socket != null) {
       try {
-        serverSocket.close();
+        socket.close();
       } catch (IOException e) {
         logger.log(Level.ERROR, "server socket close failed", e);
       }
     }
-    forceCloseRemaining();
+  }
+
+  /** 実行待ちのキューから取り除いたタスクを、未完了数から外す. */
+  protected void taskRemoved() {
+    inFlight.decrementAndGet();
   }
 
   /** ExecutorServiceへ渡す処理. 未着手のまま破棄された場合に、対象のServerProcessを特定できるよう保持する. */
@@ -438,6 +493,7 @@ public abstract class AbstractSocketServer implements Server {
       try {
         executeProcess(process);
       } finally {
+        inFlight.decrementAndGet();
         if (counted) {
           releaseConnection();
         }
@@ -452,9 +508,11 @@ public abstract class AbstractSocketServer implements Server {
 
   /** counted=trueの場合、確保済みの同時接続数の枠をタスク終了時(拒否された場合は即時)に解放する. */
   protected void submitProcess(ExecutorService exec, ServerProcess process, boolean counted) {
+    inFlight.incrementAndGet();
     try {
       exec.execute(new ProcessTask(process, counted));
     } catch (RejectedExecutionException e) {
+      inFlight.decrementAndGet();
       if (counted) {
         releaseConnection();
       }
