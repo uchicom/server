@@ -1509,4 +1509,109 @@ class SocketServerTest {
     custom.stop(1000);
     assertEquals(1, stopped.get());
   }
+
+  /** status()に、状態・処理中の接続数・実行待ち数・拒否の累計・設定が含まれ、キュー満杯が反映されることを確認する. */
+  @Test
+  void statusPoolReflectsQueueAndRejections() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    PoolSocketServer pool = startBlockingPool(factory, "queue", "1");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[2].await(10, TimeUnit.SECONDS));
+    String status = pool.status();
+    assertTrue(status.contains("状態: 待機中"), status);
+    assertTrue(status.contains("処理中の接続数: 1"), status);
+    assertTrue(status.contains("実行待ち数: 1"), status);
+    assertTrue(status.contains("queue満杯=1"), status);
+    assertTrue(status.contains("maxConnection超過=0"), status);
+    assertTrue(status.contains("pool=1"), status);
+    assertTrue(status.contains("queue=1"), status);
+    assertTrue(status.contains("timeout=60000"), status);
+    assertFalse(status.contains("host="), status);
+    factory.release.countDown();
+  }
+
+  @Test
+  void statusQueueTimeoutIsCounted() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    PoolSocketServer pool = startBlockingPool(factory, "queueTimeout", "300");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertTrue(pool.status().contains("キュー待ちタイムアウト=1"), pool.status());
+    factory.release.countDown();
+  }
+
+  /** maxConnection超過がstatus()に反映され、実行待ち数は出力されないことを確認する. */
+  @Test
+  void statusMaxConnectionIsCounted() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              p.put("host", "127.0.0.1");
+              return new MultiSocketServer(p, f);
+            },
+            factory,
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    Socket rejected = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(rejected);
+    rejected.setSoTimeout(10000);
+    assertEquals(-1, rejected.getInputStream().read());
+    String status = server.status();
+    assertTrue(status.contains("maxConnection超過=1"), status);
+    assertTrue(status.contains("処理中の接続数: 1"), status);
+    assertFalse(status.contains("実行待ち数"), status);
+    assertTrue(status.contains("host=127.0.0.1"), status);
+    assertTrue(status.contains("maxConnection=1"), status);
+    factory.release.countDown();
+  }
+
+  /** 未起動・グレースフル停止の待機中・停止後でも、例外にならず状態が切り替わることを確認する. */
+  @Test
+  void statusStates() {
+    AbstractSocketServer local = new PoolSocketServer(parameter(), new TestServerProcessFactory());
+    assertTrue(local.status().contains("状態: 待機中"));
+    local.draining = true;
+    local.alive = false;
+    assertTrue(local.status().contains("状態: グレースフル停止の待機中"));
+    local.draining = false;
+    local.stop();
+    String status = local.status();
+    assertTrue(status.contains("状態: 停止中"), status);
+    assertTrue(status.contains("実行待ち数: 0"), status);
+  }
+
+  /** toString()が短い1行であることを確認する. */
+  @Test
+  void toStringIsOneLine() {
+    Parameter p = parameter();
+    p.put("port", "8080");
+    AbstractSocketServer local = new MultiSocketServer(p, new TestServerProcessFactory());
+    assertEquals("MultiSocketServer[port=8080, alive=true, connections=0]", local.toString());
+  }
+
+  /** Serverのdefault実装は、toString()を返す. */
+  @Test
+  void defaultStatusIsToString() {
+    Server custom =
+        new Server() {
+          public void execute() {}
+
+          public void stop() {}
+
+          public String toString() {
+            return "custom";
+          }
+        };
+    assertEquals("custom", custom.status());
+  }
 }

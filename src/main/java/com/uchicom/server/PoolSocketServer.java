@@ -57,6 +57,11 @@ public class PoolSocketServer extends AbstractSocketServer {
   }
 
   @Override
+  protected int queuedCount() {
+    return exec.getQueue().size();
+  }
+
+  @Override
   public void stop() {
     super.stop();
     // 未着手のまま破棄されたタスクは processList に未登録のため、ここで閉じる
