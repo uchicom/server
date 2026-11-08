@@ -20,4 +20,15 @@ public interface Server {
 
   /** サーバ停止. */
   public void stop();
+
+  /**
+   * グレースフル停止. 新規の接続受付を止めて、処理中の接続が終わるのを最大{@code timeoutMillis}ミリ秒待ち、 期限後に残った接続を強制クローズして停止する.
+   *
+   * <p>既存の実装を壊さないよう、既定では待機せず{@link #stop()}と同じ動作をする。
+   *
+   * @param timeoutMillis 待機の上限(ミリ秒)
+   */
+  public default void stop(long timeoutMillis) {
+    stop();
+  }
 }

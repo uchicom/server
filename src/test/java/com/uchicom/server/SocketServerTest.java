@@ -1356,4 +1356,109 @@ class SocketServerTest {
             () -> new PoolSocketServer(noPool, new TestServerProcessFactory()));
     assertTrue(e.getMessage().endsWith("pool"), e.getMessage());
   }
+
+  /** 処理中の接続を1本確立して、サーバ側で登録されるまで待つ. */
+  Socket connectAndWaitRegistered(int port) throws Exception {
+    Socket socket = new Socket(InetAddress.getLoopbackAddress(), port);
+    for (int i = 0; i < 500 && server.processList.isEmpty(); i++) {
+      Thread.sleep(10);
+    }
+    assertFalse(server.processList.isEmpty());
+    return socket;
+  }
+
+  /** グレースフル停止: 期限内に終わる接続は強制クローズされず、終わった時点で停止が完了する. */
+  void assertGracefulStopWaits(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(creator, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      Thread stopper = new Thread(() -> server.stop(10000));
+      stopper.start();
+      assertFalse(factory.forceClosed.await(300, TimeUnit.MILLISECONDS));
+      assertTrue(stopper.isAlive());
+      assertTrue(server.serverSocket.isClosed());
+      // 接続の処理が自然に終わると、待機が打ち切られる
+      factory.release.countDown();
+      stopper.join(5000);
+      assertFalse(stopper.isAlive());
+    }
+  }
+
+  /** グレースフル停止: 期限後に残った接続が強制クローズされる. */
+  void assertGracefulStopForceClosesAfterTimeout(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(creator, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      long begin = System.nanoTime();
+      server.stop(300);
+      assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin) >= 250);
+      assertTrue(factory.forceClosed.await(5, TimeUnit.SECONDS));
+    }
+  }
+
+  @Test
+  void gracefulStopWaitsSingle() throws Exception {
+    assertGracefulStopWaits(SingleSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsMulti() throws Exception {
+    assertGracefulStopWaits(MultiSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsPool() throws Exception {
+    assertGracefulStopWaits(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsVirtual() throws Exception {
+    assertGracefulStopWaits(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutMulti() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(MultiSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutPool() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutVirtual() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopZeroIsImmediate() throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(MultiSocketServer::new, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      server.stop(0);
+      assertTrue(factory.forceClosed.await(5, TimeUnit.SECONDS));
+    }
+  }
+
+  /** Serverのdefault実装は、stop()を呼ぶ. */
+  @Test
+  void defaultStopWithTimeoutCallsStop() {
+    AtomicInteger stopped = new AtomicInteger();
+    Server custom =
+        new Server() {
+          public void execute() {}
+
+          public void stop() {
+            stopped.incrementAndGet();
+          }
+        };
+    custom.stop(1000);
+    assertEquals(1, stopped.get());
+  }
 }
