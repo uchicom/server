@@ -189,7 +189,7 @@ Server の種類
 
 ### plate の status コマンドから呼ぶ場合
 
-plate は設定ファイルで static メソッドの main / shutdown を指定できます。アプリ側の static フィールドに `Server` を保持し、`String` を返す static メソッド `getStatus()` を用意すると、plate の `status` コマンドで表示できます。
+plate は設定ファイルで static メソッドの main / shutdown を指定できます。アプリ側の static フィールドに `Server` を保持し、`String` を返す static メソッド `status()` を用意すると、plate の `status` コマンドで表示できます。
 クラスローダーをまたぐ可能性があるため、返り値は型を持たない `String` にしてください。
 
 ```java
@@ -208,7 +208,7 @@ public class EchoMain {
 		}
 	}
 
-	public static String getStatus() {
+	public static String status() {
 		Server s = server;
 		return s == null ? "not running" : s.status();
 	}
