@@ -19,6 +19,19 @@ Java 25 以上が必要です。Maven Central で公開しています。
 </dependency>
 ```
 
+モジュールシステム
+-----------------
+
+`module-info.java` を提供しており、モジュール名は `com.uchicom.server` です(`com.uchicom.server` パッケージを `exports`)。
+
+```java
+requires com.uchicom.server;
+```
+
+依存する `com.uchicom:util` は 1.6.6 からモジュール化(`com.uchicom.util`)されたため、`module-info.java` を採用しました。
+`Parameter` が公開 API に露出するため、`requires transitive com.uchicom.util` としています。
+1.6.5 以前の `util` は `module-info.java` も `Automatic-Module-Name` も持たなかったため、この方針は 1.6.6 以上が前提です。
+
 最小の実装例
 -----------------
 
