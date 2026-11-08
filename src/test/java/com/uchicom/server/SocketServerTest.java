@@ -1400,6 +1400,54 @@ class SocketServerTest {
     }
   }
 
+  /** グレースフル停止: キュー待ち・起動直後の接続が、待機中に実行されて完了する. */
+  void assertGracefulStopRunsQueued(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    Parameter parameter = parameter();
+    parameter.put("pool", "1");
+    server = creator.apply(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    // 1接続目が1バイト待ちでワーカーを占有し、2接続目はキュー待ちになる
+    try (Socket first = new Socket(InetAddress.getLoopbackAddress(), port);
+        Socket second = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      second.setSoTimeout(5000);
+      Thread.sleep(300);
+      Thread stopper = new Thread(() -> server.stop(10000));
+      stopper.start();
+      Thread.sleep(200);
+      first.getOutputStream().write(1);
+      first.getOutputStream().flush();
+      second.getOutputStream().write(2);
+      second.getOutputStream().flush();
+      assertEquals(2, second.getInputStream().read());
+      stopper.join(5000);
+      assertFalse(stopper.isAlive());
+      assertEquals(2, factory.executed.get());
+    }
+  }
+
+  @Test
+  void gracefulStopRunsQueuedPool() throws Exception {
+    assertGracefulStopRunsQueued(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopRunsQueuedVirtual() throws Exception {
+    assertGracefulStopRunsQueued(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopRunsQueuedMulti() throws Exception {
+    assertGracefulStopRunsQueued(MultiSocketServer::new);
+  }
+
   @Test
   void gracefulStopWaitsSingle() throws Exception {
     assertGracefulStopWaits(SingleSocketServer::new);

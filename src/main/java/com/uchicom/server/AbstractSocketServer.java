@@ -256,8 +256,9 @@ public abstract class AbstractSocketServer implements Server {
   protected void executeProcess(ServerProcess process) {
     startTimes.put(process, System.currentTimeMillis());
     processList.add(process);
-    // 登録前にstopのforceCloseRemaining()が終わっていた場合、監視されないため自分で閉じる
-    if (!alive) {
+    // 登録前にstopのforceCloseRemaining()が終わっていた場合、監視されないため自分で閉じる.
+    // グレースフル停止の待機中は、実行待ち・起動直後の接続も処理する(登録済みのため、期限後はforceCloseRemaining()が閉じる)
+    if (!alive && !draining) {
       unregister(process);
       forceCloseQuietly(process);
       return;
