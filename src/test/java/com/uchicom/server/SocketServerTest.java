@@ -3,6 +3,7 @@ package com.uchicom.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.uchicom.util.Parameter;
@@ -118,6 +119,40 @@ class SocketServerTest {
   }
 
   @Test
+  void hostLoopback() throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    server =
+        new SingleSocketServer(
+            withHost(parameter(), InetAddress.getLoopbackAddress().getHostAddress()), factory);
+    startServer();
+    assertTrue(server.serverSocket.getInetAddress().isLoopbackAddress());
+    assertEquals('a', echo(server.serverSocket.getLocalPort(), 'a'));
+  }
+
+  @Test
+  void hostUnspecifiedBindsAllInterfaces() throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    server = new SingleSocketServer(parameter(), factory);
+    startServer();
+    assertTrue(server.serverSocket.getInetAddress().isAnyLocalAddress());
+    assertEquals('a', echo(server.serverSocket.getLocalPort(), 'a'));
+  }
+
+  Parameter withHost(Parameter parameter, String host) {
+    parameter.put("host", host);
+    return parameter;
+  }
+
+  void startServer() throws Exception {
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+  }
+
+  @Test
   void single() throws Exception {
     assertEchoAndStop(SingleSocketServer::new);
   }
@@ -157,36 +192,206 @@ class SocketServerTest {
     assertLoopEndsWhenNotAlive(VirtualSocketServer::new);
   }
 
-  @Test
-  void unexpectedExceptionStopsServer() throws Exception {
-    PrintStream originalErr = System.err;
-    ByteArrayOutputStream err = new ByteArrayOutputStream();
-    System.setErr(new PrintStream(err, true));
-    try {
-      int port =
-          start(
-              SingleSocketServer::new,
-              (parameter, socket) -> {
+  /** createServerProcessが例外を投げても、サーバが継続して次の接続を処理し、acceptしたソケットがcloseされることを確認する. */
+  void assertCreateFailureContinues(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    AtomicInteger count = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    CapturingLogger captured = new CapturingLogger();
+    int port =
+        start(
+            creator,
+            (parameter, socket) -> {
+              if (count.getAndIncrement() == 0) {
                 throw new IllegalStateException("boom");
-              });
-      try (Socket ignored = new Socket(InetAddress.getLoopbackAddress(), port)) {
-        // 接続のみ
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            captured);
+    try (Socket failed = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      failed.setSoTimeout(5000);
+      // サーバ側でcloseされるので、EOF(または切断)になる
+      try {
+        assertEquals(-1, failed.getInputStream().read());
+      } catch (IOException e) {
+        // RSTによる切断も許容する
       }
-      thread.join(5000);
-      assertFalse(thread.isAlive());
-      server.monitor.join(5000);
-      assertFalse(server.monitor.isAlive());
+    }
+    assertEquals('a', echo(port, 'a'));
+    assertTrue(thread.isAlive());
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "boom".equals(r.thrown().getMessage())));
+  }
+
+  /** ログを記録するLogger. */
+  static class CapturingLogger implements System.Logger {
+    record Record(System.Logger.Level level, String message, Throwable thrown) {}
+
+    final java.util.List<Record> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @Override
+    public String getName() {
+      return "capturing";
+    }
+
+    @Override
+    public boolean isLoggable(Level level) {
+      return true;
+    }
+
+    @Override
+    public void log(Level level, java.util.ResourceBundle bundle, String msg, Throwable thrown) {
+      records.add(new Record(level, msg, thrown));
+    }
+
+    @Override
+    public void log(Level level, java.util.ResourceBundle bundle, String format, Object... params) {
+      records.add(
+          new Record(
+              level,
+              params == null ? format : java.text.MessageFormat.format(format, params),
+              null));
+    }
+  }
+
+  int start(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator,
+      ServerProcessFactory factory,
+      System.Logger logger)
+      throws Exception {
+    return start(creator, factory, logger, parameter());
+  }
+
+  int start(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator,
+      ServerProcessFactory factory,
+      System.Logger logger,
+      Parameter parameter)
+      throws Exception {
+    server = creator.apply(parameter, factory);
+    server.logger = logger;
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    return server.serverSocket.getLocalPort();
+  }
+
+  /** accept失敗が連続しても、初回のみ詳細・以降は一定件数ごとに件数のみ出力され、復旧時に通知されることを確認する. */
+  @Test
+  void acceptFailuresAreThrottled() throws Exception {
+    server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    server.logger = captured;
+    server.acceptRetryWaitMillis = 1;
+    int failures = AbstractSocketServer.ACCEPT_FAILURE_LOG_INTERVAL * 2 + 1;
+    AtomicInteger count = new AtomicInteger();
+    java.net.ServerSocket failing =
+        new java.net.ServerSocket() {
+          @Override
+          public Socket accept() throws IOException {
+            if (count.getAndIncrement() < failures) {
+              throw new IOException("too many open files");
+            }
+            return super.accept();
+          }
+        };
+    failing.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+    server.serverSocket = failing;
+    thread =
+        new Thread(
+            () -> {
+              try {
+                server.execute(failing);
+              } catch (IOException e) {
+                // 無視
+              }
+            });
+    thread.setDaemon(true);
+    thread.start();
+    assertEquals('a', echo(failing.getLocalPort(), 'a'));
+    // 初回(スタックトレース付き) + 100件目 + 200件目 + 復旧通知
+    assertEquals(4, captured.records.size());
+    assertEquals("accept failed", captured.records.get(0).message());
+    assertTrue(captured.records.get(0).thrown() != null);
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
+    assertEquals(System.Logger.Level.INFO, captured.records.get(3).level());
+  }
+
+  @Test
+  void singleCreateFailure() throws Exception {
+    assertCreateFailureContinues(SingleSocketServer::new);
+  }
+
+  @Test
+  void multiCreateFailure() throws Exception {
+    assertCreateFailureContinues(MultiSocketServer::new);
+  }
+
+  @Test
+  void poolCreateFailure() throws Exception {
+    assertCreateFailureContinues(PoolSocketServer::new);
+  }
+
+  @Test
+  void virtualCreateFailure() throws Exception {
+    assertCreateFailureContinues(VirtualSocketServer::new);
+  }
+
+  @Test
+  void acceptIOExceptionContinues() throws Exception {
+    PrintStream originalErr = System.err;
+    System.setErr(new PrintStream(new ByteArrayOutputStream(), true));
+    try {
+      server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+      AtomicInteger count = new AtomicInteger();
+      java.net.ServerSocket failing =
+          new java.net.ServerSocket() {
+            @Override
+            public Socket accept() throws IOException {
+              if (count.getAndIncrement() == 0) {
+                throw new IOException("too many open files");
+              }
+              return super.accept();
+            }
+          };
+      failing.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+      server.serverSocket = failing;
+      thread =
+          new Thread(
+              () -> {
+                try {
+                  server.execute(failing);
+                } catch (IOException e) {
+                  // 無視
+                }
+              });
+      thread.setDaemon(true);
+      thread.start();
+      assertEquals('a', echo(failing.getLocalPort(), 'a'));
+      assertTrue(count.get() >= 2);
+      assertTrue(thread.isAlive());
     } finally {
       System.setErr(originalErr);
+      server.stop();
     }
-    // 想定外の例外はstopによるものと区別して出力される
-    assertTrue(err.toString().contains("boom"));
   }
 
   @Test
   void idleProcessIsForceClosed() throws Exception {
     TestServerProcessFactory factory = new TestServerProcessFactory(true, 0);
-    int port = start(MultiSocketServer::new, factory);
+    int port =
+        start(
+            (p, f) -> {
+              // タイムアウトは実行開始時刻が基準のため、短くして待ち時間を抑える
+              p.put("timeout", "300");
+              return new MultiSocketServer(p, f);
+            },
+            factory);
     try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
       assertTrue(factory.forceClosed.await(10, java.util.concurrent.TimeUnit.SECONDS));
     }
@@ -264,9 +469,782 @@ class SocketServerTest {
     assertIdleForceClosedThenNext(PoolSocketServer::new);
   }
 
+  /** 接続順にforceCloseを記録し、実行は共有のlatchが解放されるまでブロックするFactory. */
+  static class BlockingFactory implements ServerProcessFactory {
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch[] closed = {
+      new CountDownLatch(1), new CountDownLatch(1), new CountDownLatch(1)
+    };
+    final AtomicInteger created = new AtomicInteger();
+    final AtomicInteger executed = new AtomicInteger();
+
+    @Override
+    public ServerProcess createServerProcess(Parameter parameter, java.net.Socket socket) {
+      final int index = created.getAndIncrement();
+      return new ServerProcess() {
+        @Override
+        public long getLastTime() {
+          return System.currentTimeMillis();
+        }
+
+        @Override
+        public void forceClose() {
+          closed[index].countDown();
+          try {
+            socket.close();
+          } catch (IOException e) {
+            // 無視
+          }
+        }
+
+        @Override
+        public void execute() {
+          executed.incrementAndGet();
+          try {
+            release.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      };
+    }
+  }
+
+  PoolSocketServer startBlockingPool(BlockingFactory factory, String key, String value)
+      throws Exception {
+    int port =
+        start(
+            (p, f) -> {
+              p.put("pool", "1");
+              p.put("timeout", "60000");
+              p.put(key, value);
+              return new PoolSocketServer(p, f);
+            },
+            factory,
+            serverLog);
+    // 1件目を実行中にしておく
+    Socket first = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(first);
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(1, factory.executed.get());
+    this.port = port;
+    return (PoolSocketServer) server;
+  }
+
+  final CapturingLogger serverLog = new CapturingLogger();
+
+  /** 指定の理由を含むWARNINGが出力されていることを確認する. */
+  void assertWarned(String reason) {
+    assertTrue(
+        serverLog.records.stream()
+            .anyMatch(
+                r -> r.level() == System.Logger.Level.WARNING && r.message().contains(reason)),
+        serverLog.records.toString());
+  }
+
+  /** createServerProcessの失敗が連続しても、初回のみ詳細・以降は一定件数ごとに件数のみ出力され、復旧時に通知されることを確認する. */
+  @Test
+  void createFailuresAreThrottled() throws Exception {
+    server = new SingleSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    server.logger = captured;
+    server.acceptRetryWaitMillis = 1;
+    int failures = AbstractSocketServer.CREATE_FAILURE_LOG_INTERVAL * 2 + 1;
+    AtomicInteger count = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    server.factory =
+        (parameter, socket) -> {
+          if (count.getAndIncrement() < failures) {
+            throw new IllegalStateException("boom");
+          }
+          return echo.createServerProcess(parameter, socket);
+        };
+    java.net.ServerSocket serverSocket = new java.net.ServerSocket();
+    serverSocket.bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+    server.serverSocket = serverSocket;
+    thread =
+        new Thread(
+            () -> {
+              try {
+                server.execute(serverSocket);
+              } catch (IOException e) {
+                // 無視
+              }
+            });
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < failures; i++) {
+      try (Socket s = new Socket(InetAddress.getLoopbackAddress(), serverSocket.getLocalPort())) {
+        s.setSoTimeout(5000);
+        try {
+          s.getInputStream().read();
+        } catch (IOException e) {
+          // RSTも許容する
+        }
+      }
+    }
+    assertEquals('a', echo(serverSocket.getLocalPort(), 'a'));
+    // 初回(スタックトレース付き) + 100件目 + 200件目 + 復旧通知
+    assertEquals(4, captured.records.size(), captured.records.toString());
+    assertEquals("createServerProcess failed", captured.records.get(0).message());
+    assertTrue(captured.records.get(0).thrown() != null);
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
+    assertEquals(System.Logger.Level.INFO, captured.records.get(3).level());
+  }
+
+  /** 拒否が続いても、初回と一定件数ごとにしかログが出ないことを確認する. */
+  @Test
+  void rejectionsAreThrottled() throws Exception {
+    AbstractSocketServer local = new MultiSocketServer(parameter(), new TestServerProcessFactory());
+    CapturingLogger captured = new CapturingLogger();
+    local.logger = captured;
+    int total = AbstractSocketServer.REJECT_LOG_INTERVAL * 2 + 1;
+    for (int i = 0; i < total; i++) {
+      local.logQueueTimeout(1000);
+    }
+    // 初回 + 100件目 + 200件目
+    assertEquals(3, captured.records.size());
+    assertTrue(captured.records.get(1).message().contains("100"));
+    assertTrue(captured.records.get(2).message().contains("200"));
+  }
+
+  int port;
+  final java.util.List<Socket> sockets = new java.util.ArrayList<>();
+
+  @AfterEach
+  void closeSockets() throws Exception {
+    for (Socket socket : sockets) {
+      socket.close();
+    }
+  }
+
+  /** 実行待ちの上限を超えた接続だけが、受け付け直後に閉じられることを確認する. */
+  @Test
+  void poolQueueLimit() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queue", "1");
+    // 2件目は実行待ちに入る
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    // 3件目は上限超過で閉じられる
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[2].await(10, TimeUnit.SECONDS));
+    assertWarned("queue full");
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.closed[1].getCount());
+    assertEquals(1, factory.executed.get());
+    // 解放すると、実行待ちだった2件目が処理される
+    factory.release.countDown();
+    for (int i = 0; i < 500 && factory.executed.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(2, factory.executed.get());
+  }
+
+  /** 実行待ちが上限なしの場合(既定)は、閉じられないことを確認する. */
+  @Test
+  void poolQueueUnlimitedByDefault() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queueTimeout", "60000");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 3; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(3, factory.created.get());
+    assertFalse(factory.closed[1].await(500, TimeUnit.MILLISECONDS));
+    assertFalse(factory.closed[2].await(10, TimeUnit.MILLISECONDS));
+    factory.release.countDown();
+  }
+
+  /** 実行待ちのタイムアウトを超えた接続だけが閉じられることを確認する. */
+  @Test
+  void poolQueueTimeout() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    startBlockingPool(factory, "queueTimeout", "300");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertWarned("queue wait timeout");
+    // 実行中の1件目は、アイドルタイムアウト内のため閉じられない
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.executed.get());
+    factory.release.countDown();
+  }
+
+  /** 最大同時接続数を超えた接続だけが閉じられ、既存の接続は影響を受けず、解放後は再び受け付けることを確認する. */
+  void assertMaxConnection(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              return creator.apply(p, f);
+            },
+            factory,
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(1, factory.executed.get());
+    // 2件目は上限超過で、ServerProcessを生成せずに閉じられる
+    Socket rejected = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(rejected);
+    rejected.setSoTimeout(10000);
+    assertEquals(-1, rejected.getInputStream().read());
+    assertWarned("maxConnection exceeded");
+    assertEquals(1, factory.created.get());
+    assertEquals(1, factory.closed[0].getCount());
+    assertEquals(1, factory.executed.get());
+    // 1件目が終了すると枠が解放され、3件目は処理される
+    factory.release.countDown();
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    Thread.sleep(300);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(2, factory.executed.get());
+    assertEquals(2, factory.created.get());
+    assertEquals(1, factory.closed[1].getCount());
+  }
+
+  @Test
+  void multiMaxConnection() throws Exception {
+    assertMaxConnection(MultiSocketServer::new);
+  }
+
+  @Test
+  void virtualMaxConnection() throws Exception {
+    assertMaxConnection(VirtualSocketServer::new);
+  }
+
+  /** createServerProcessが失敗しても枠がリークせず、次の接続が処理されることを確認する. */
+  void assertCreateFailureReleasesSlot(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    AtomicInteger created = new AtomicInteger();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("maxConnection", "1");
+              return creator.apply(p, f);
+            },
+            (parameter, socket) -> {
+              if (created.getAndIncrement() == 0) {
+                throw new IllegalStateException("create failed");
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            serverLog);
+    Socket failed = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(failed);
+    failed.setSoTimeout(10000);
+    assertEquals(-1, failed.getInputStream().read());
+    // maxConnection=1でも、生成失敗時に枠が解放されているので次の接続が処理される
+    assertEquals('a', echo(port, 'a'));
+  }
+
+  @Test
+  void multiCreateFailureReleasesSlot() throws Exception {
+    assertCreateFailureReleasesSlot(MultiSocketServer::new);
+  }
+
+  @Test
+  void virtualCreateFailureReleasesSlot() throws Exception {
+    assertCreateFailureReleasesSlot(VirtualSocketServer::new);
+  }
+
+  /** maxConnection未指定時は、複数の同時接続がすべて処理されることを確認する. */
+  void assertMaxConnectionUnlimitedByDefault(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port = start(creator, factory);
+    for (int i = 0; i < 3; i++) {
+      sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    }
+    for (int i = 0; i < 500 && factory.executed.get() < 3; i++) {
+      Thread.sleep(10);
+    }
+    assertEquals(3, factory.executed.get());
+    factory.release.countDown();
+  }
+
+  @Test
+  void multiMaxConnectionUnlimitedByDefault() throws Exception {
+    assertMaxConnectionUnlimitedByDefault(MultiSocketServer::new);
+  }
+
+  /** スレッド生成が失敗しても、サーバが停止せず、枠が解放され、その接続がcloseされることを確認する. */
+  @Test
+  void multiThreadStartFailureContinues() throws Exception {
+    AtomicInteger starts = new AtomicInteger();
+    TestServerProcessFactory echo = new TestServerProcessFactory();
+    CountDownLatch failedClosed = new CountDownLatch(1);
+    AtomicInteger created = new AtomicInteger();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              MultiSocketServer s =
+                  new MultiSocketServer(p, f) {
+                    @Override
+                    void startThread(Thread t) {
+                      if (starts.getAndIncrement() == 0) {
+                        throw new OutOfMemoryError("unable to create native thread");
+                      }
+                      super.startThread(t);
+                    }
+                  };
+              s.acceptRetryWaitMillis = 10;
+              return s;
+            },
+            (parameter, socket) -> {
+              if (created.getAndIncrement() == 0) {
+                return new ServerProcess() {
+                  @Override
+                  public long getLastTime() {
+                    return System.currentTimeMillis();
+                  }
+
+                  @Override
+                  public void forceClose() {
+                    failedClosed.countDown();
+                  }
+
+                  @Override
+                  public void execute() {}
+                };
+              }
+              return echo.createServerProcess(parameter, socket);
+            },
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(failedClosed.await(10, TimeUnit.SECONDS));
+    // maxConnection=1でも、枠が解放されているので次の接続が処理される
+    assertEquals('a', echo(port, 'a'));
+    assertTrue(thread.isAlive());
+    assertTrue(
+        serverLog.records.stream()
+            .anyMatch(
+                r ->
+                    r.level() == System.Logger.Level.ERROR
+                        && r.message().contains("thread start failed")),
+        serverLog.records.toString());
+  }
+
+  /** OutOfMemoryError以外のVirtualMachineErrorは、握りつぶさずにサーバを終了させることを確認する. */
+  @Test
+  void multiThreadStartVirtualMachineErrorTerminates() throws Exception {
+    int port =
+        start(
+            (p, f) ->
+                new MultiSocketServer(p, f) {
+                  @Override
+                  void startThread(Thread t) {
+                    throw new InternalError("fatal");
+                  }
+                },
+            new TestServerProcessFactory(),
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    thread.join(10000);
+    assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void virtualMaxConnectionUnlimitedByDefault() throws Exception {
+    assertMaxConnectionUnlimitedByDefault(VirtualSocketServer::new);
+  }
+
   @Test
   void virtualIdleTimeout() throws Exception {
     assertIdleForceClosedThenNext(VirtualSocketServer::new);
+  }
+
+  /** stop()後に残った接続が、タイムアウトを待たずに強制クローズされ、スレッドが終了することを確認する. */
+  void assertStopForceClosesRemaining(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    CountDownLatch forceClosed = new CountDownLatch(1);
+    CountDownLatch executed = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    ServerProcessFactory factory =
+        (parameter, socket) ->
+            new ServerProcess() {
+              @Override
+              public long getLastTime() {
+                return System.currentTimeMillis();
+              }
+
+              @Override
+              public void forceClose() {
+                forceClosed.countDown();
+                try {
+                  socket.close();
+                } catch (IOException e) {
+                  // 無視
+                }
+              }
+
+              @Override
+              public void execute() {
+                executed.countDown();
+                try (socket) {
+                  socket.getInputStream().read();
+                } catch (IOException e) {
+                  // 強制クローズによる例外
+                } finally {
+                  finished.countDown();
+                }
+              }
+            };
+    Parameter parameter = parameter();
+    // タイムアウトでは閉じられない十分長い値
+    parameter.put("timeout", "600000");
+    server = creator.apply(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    try (Socket idle = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      assertTrue(executed.await(10, TimeUnit.SECONDS));
+      server.stop();
+      assertTrue(forceClosed.await(10, TimeUnit.SECONDS));
+      assertTrue(finished.await(10, TimeUnit.SECONDS));
+    }
+    thread.join(5000);
+    assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void singleStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(SingleSocketServer::new);
+  }
+
+  @Test
+  void multiStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(MultiSocketServer::new);
+  }
+
+  @Test
+  void poolStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(PoolSocketServer::new);
+  }
+
+  @Test
+  void virtualStopForceCloses() throws Exception {
+    assertStopForceClosesRemaining(VirtualSocketServer::new);
+  }
+
+  /** poolを超えて未着手のまま待たされている接続が、stop()でshutdownNow()に破棄されても強制クローズされることを確認する. */
+  @Test
+  void poolStopForceClosesQueued() throws Exception {
+    int pool = 2;
+    int total = pool + 1;
+    CountDownLatch executing = new CountDownLatch(pool);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch allClosed = new CountDownLatch(total);
+    java.util.Set<ServerProcess> closed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    java.util.Set<ServerProcess> started = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    ServerProcessFactory factory =
+        (parameter, socket) ->
+            new ServerProcess() {
+              @Override
+              public long getLastTime() {
+                return System.currentTimeMillis();
+              }
+
+              @Override
+              public void forceClose() {
+                closed.add(this);
+                release.countDown();
+                allClosed.countDown();
+              }
+
+              @Override
+              public void execute() {
+                started.add(this);
+                executing.countDown();
+                try {
+                  release.await();
+                } catch (InterruptedException e) {
+                  // shutdownNowによる割り込み
+                }
+              }
+            };
+    Parameter parameter = parameter();
+    parameter.put("pool", String.valueOf(pool));
+    parameter.put("timeout", "600000");
+    server = new PoolSocketServer(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    java.util.List<Socket> sockets = new java.util.ArrayList<>();
+    try {
+      for (int i = 0; i < total; i++) {
+        sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+      }
+      assertTrue(executing.await(10, TimeUnit.SECONDS));
+      // 3つ目がacceptされてキューに入るのを待つ
+      Thread.sleep(500);
+      assertEquals(pool, started.size());
+      server.stop();
+      assertTrue(allClosed.await(10, TimeUnit.SECONDS));
+      assertEquals(total, closed.size());
+    } finally {
+      for (Socket s : sockets) {
+        s.close();
+      }
+    }
+  }
+
+  private ServerProcess countingProcess(AtomicInteger closed, AtomicInteger executed) {
+    return new ServerProcess() {
+      @Override
+      public long getLastTime() {
+        return System.currentTimeMillis();
+      }
+
+      @Override
+      public void forceClose() {
+        closed.incrementAndGet();
+      }
+
+      @Override
+      public void execute() {
+        executed.incrementAndGet();
+      }
+    };
+  }
+
+  /** shutdown済みのExecutorServiceに拒否された接続が、強制クローズされることを確認する. */
+  @Test
+  void submitRejectedForceCloses() throws Exception {
+    for (String type : new String[] {"pool", "virtual"}) {
+      Parameter parameter = parameter();
+      parameter.put("pool", "1");
+      AbstractSocketServer s =
+          type.equals("pool")
+              ? new PoolSocketServer(parameter, new TestServerProcessFactory())
+              : new VirtualSocketServer(parameter, new TestServerProcessFactory());
+      java.util.concurrent.ExecutorService exec =
+          type.equals("pool") ? ((PoolSocketServer) s).exec : ((VirtualSocketServer) s).exec;
+      exec.shutdownNow();
+      AtomicInteger closed = new AtomicInteger();
+      AtomicInteger executed = new AtomicInteger();
+      s.submitProcess(exec, countingProcess(closed, executed));
+      assertEquals(1, closed.get(), type);
+      assertEquals(0, executed.get(), type);
+    }
+  }
+
+  /** stop済みのサーバでexecuteProcessが始まった場合、実行せずに強制クローズされることを確認する. */
+  @Test
+  void executeProcessAfterStopForceCloses() throws Exception {
+    AbstractSocketServer s = new MultiSocketServer(parameter(), new TestServerProcessFactory());
+    s.alive = false;
+    AtomicInteger closed = new AtomicInteger();
+    AtomicInteger executed = new AtomicInteger();
+    s.executeProcess(countingProcess(closed, executed));
+    assertEquals(1, closed.get());
+    assertEquals(0, executed.get());
+    assertTrue(s.processList.isEmpty());
+  }
+
+  /** forceClose()が例外を投げても、監視が継続して他の接続がタイムアウトで閉じられ、再呼び出しされないことを確認する. */
+  @Test
+  void forceCloseExceptionContinuesMonitoring() throws Exception {
+    CapturingLogger captured = new CapturingLogger();
+    {
+      AtomicInteger count = new AtomicInteger();
+      AtomicInteger throwingCalls = new AtomicInteger();
+      CountDownLatch secondClosed = new CountDownLatch(1);
+      ServerProcessFactory factory =
+          (parameter, socket) ->
+              new ServerProcess() {
+                final int index = count.getAndIncrement();
+                final long start = System.currentTimeMillis();
+
+                @Override
+                public long getLastTime() {
+                  return start;
+                }
+
+                @Override
+                public void forceClose() {
+                  if (index == 0) {
+                    throwingCalls.incrementAndGet();
+                    throw new IllegalStateException("closeboom");
+                  }
+                  try {
+                    socket.close();
+                  } catch (IOException e) {
+                    // 無視
+                  }
+                }
+
+                @Override
+                public void execute() {
+                  try (socket) {
+                    socket.getInputStream().read();
+                  } catch (IOException e) {
+                    // 強制クローズによる例外
+                  } finally {
+                    if (index == 1) {
+                      secondClosed.countDown();
+                    }
+                  }
+                }
+              };
+      Parameter parameter = parameter();
+      parameter.put("timeout", "300");
+      int port = start(MultiSocketServer::new, factory, captured, parameter);
+      try (Socket first = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        // 最初の接続のforceClose()が例外を投げるまで待つ
+        for (int i = 0; i < 500 && throwingCalls.get() == 0; i++) {
+          Thread.sleep(20);
+        }
+        assertEquals(1, throwingCalls.get());
+        try (Socket second = new Socket(InetAddress.getLoopbackAddress(), port)) {
+          assertTrue(secondClosed.await(10, TimeUnit.SECONDS));
+        }
+        // 例外を投げたプロセスは監視対象から外れ、再度forceClose()されない
+        Thread.sleep(1500);
+        assertEquals(1, throwingCalls.get());
+        assertTrue(server.monitor.isAlive());
+      }
+    }
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "closeboom".equals(r.thrown().getMessage())));
+  }
+
+  /** checkQueued()が例外を投げても、ログ出力して監視が継続されることを確認する. */
+  @Test
+  void checkQueuedExceptionContinuesMonitoring() throws Exception {
+    CapturingLogger captured = new CapturingLogger();
+    AtomicInteger calls = new AtomicInteger();
+    CountDownLatch recovered = new CountDownLatch(1);
+    start(
+        (p, f) ->
+            new MultiSocketServer(p, f) {
+              @Override
+              protected void checkQueued(long now) {
+                if (calls.incrementAndGet() == 1) {
+                  throw new IllegalStateException("queueboom");
+                }
+                recovered.countDown();
+              }
+            },
+        new TestServerProcessFactory(),
+        captured);
+    // 例外後の周回でもcheckQueued()が呼ばれ続ける
+    assertTrue(recovered.await(10, TimeUnit.SECONDS));
+    assertTrue(server.monitor.isAlive());
+    assertTrue(
+        captured.records.stream()
+            .anyMatch(r -> r.thrown() != null && "queueboom".equals(r.thrown().getMessage())));
+    // stop()による終了は従来どおり
+    server.stop();
+    server.monitor.join(5000);
+    assertFalse(server.monitor.isAlive());
+  }
+
+  /** 待機した接続が実行開始の直後にforceClose()されないことを確認する. */
+  @Test
+  void queuedProcessIsNotTimedOutImmediately() throws Exception {
+    AtomicInteger count = new AtomicInteger();
+    CountDownLatch busyStarted = new CountDownLatch(2);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch queuedFinished = new CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicLong execStart = new java.util.concurrent.atomic.AtomicLong();
+    java.util.concurrent.atomic.AtomicLong closedAt =
+        new java.util.concurrent.atomic.AtomicLong(-1);
+    long timeout = 300;
+    ServerProcessFactory factory =
+        (parameter, socket) ->
+            new ServerProcess() {
+              final int index = count.getAndIncrement();
+              final long created = System.currentTimeMillis();
+
+              @Override
+              public long getLastTime() {
+                // 先頭2接続は常に通信中扱い。待機した接続は生成時刻のまま更新しない
+                return index < 2 ? System.currentTimeMillis() : created;
+              }
+
+              @Override
+              public void forceClose() {
+                if (index >= 2) {
+                  closedAt.compareAndSet(-1, System.currentTimeMillis());
+                }
+                try {
+                  socket.close();
+                } catch (IOException e) {
+                  // 無視
+                }
+              }
+
+              @Override
+              public void execute() {
+                try (socket) {
+                  if (index < 2) {
+                    busyStarted.countDown();
+                    release.await();
+                    return;
+                  }
+                  execStart.set(System.currentTimeMillis());
+                  // 実行開始後、監視スレッドが判定する時間を与える
+                  Thread.sleep(1500);
+                } catch (Exception e) {
+                  // 無視
+                } finally {
+                  if (index >= 2) {
+                    queuedFinished.countDown();
+                  }
+                }
+              }
+            };
+    Parameter parameter = parameter();
+    parameter.put("timeout", String.valueOf(timeout));
+    server = new PoolSocketServer(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    try (Socket a = new Socket(InetAddress.getLoopbackAddress(), port);
+        Socket b = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      assertTrue(busyStarted.await(10, TimeUnit.SECONDS));
+      try (Socket queued = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        Thread.sleep(timeout * 3);
+        release.countDown();
+        assertTrue(queuedFinished.await(10, TimeUnit.SECONDS));
+        // 実行時間(1500ms)はtimeoutを超えるので最終的にはタイムアウトするが、
+        // 待機時間を含めた判定で開始直後に閉じられることはなく、実行開始からtimeout経過後に閉じられる
+        assertTrue(closedAt.get() >= 0);
+        assertTrue(closedAt.get() - execStart.get() >= timeout);
+      }
+    }
   }
 
   @Test
@@ -280,5 +1258,360 @@ class SocketServerTest {
     thread.start();
     thread.join(5000);
     assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void missingRequiredKeysAreListed() {
+    Parameter empty = new Parameter(new String[0]);
+    for (BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator :
+        java.util.List.<BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer>>of(
+            SingleSocketServer::new, MultiSocketServer::new, VirtualSocketServer::new)) {
+      IllegalArgumentException e =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> creator.apply(empty, new TestServerProcessFactory()));
+      assertTrue(e.getMessage().contains("port, back"), e.getMessage());
+      assertFalse(e.getMessage().contains("pool"), e.getMessage());
+    }
+  }
+
+  @Test
+  void invalidNumericValuesAreListed() {
+    Parameter p = new Parameter(new String[0]);
+    p.put("port", "abc");
+    p.put("back", "-1");
+    p.put("pool", "0");
+    p.put("queue", "0");
+    p.put("queueTimeout", "-5");
+    p.put("timeout", "0");
+    p.put("maxConnection", "0");
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new PoolSocketServer(p, new TestServerProcessFactory()));
+    for (String key :
+        new String[] {"port=abc", "back=-1", "pool=0", "queue=0", "queueTimeout=-5", "timeout=0"}) {
+      assertTrue(e.getMessage().contains(key), e.getMessage());
+    }
+    assertTrue(e.getMessage().contains("maxConnection=0"), e.getMessage());
+
+    Parameter big = new Parameter(new String[0]);
+    big.put("port", "65536");
+    big.put("back", "50");
+    e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new SingleSocketServer(big, new TestServerProcessFactory()));
+    assertTrue(e.getMessage().contains("port=65536"), e.getMessage());
+    assertTrue(e.getMessage().contains("0〜65535"), e.getMessage());
+  }
+
+  @Test
+  void bindFailureIsThrown() throws Exception {
+    try (java.net.ServerSocket used =
+        new java.net.ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+      Parameter p = parameter();
+      p.put("port", String.valueOf(used.getLocalPort()));
+      p.put("host", "127.0.0.1");
+      SingleSocketServer s = new SingleSocketServer(p, new TestServerProcessFactory());
+      IllegalStateException e = assertThrows(IllegalStateException.class, s::execute);
+      assertTrue(e.getCause() instanceof java.net.BindException, String.valueOf(e.getCause()));
+    }
+  }
+
+  @Test
+  void sslKeyStoreMissingIsThrown() {
+    Parameter p = parameter();
+    p.put("ssl", "true");
+    p.put("keyStorePass", "pass");
+    p.put("keyStoreName", "no-such-keystore.p12");
+    SingleSocketServer s = new SingleSocketServer(p, new TestServerProcessFactory());
+    IllegalStateException e = assertThrows(IllegalStateException.class, s::execute);
+    assertTrue(e.getCause() instanceof java.io.FileNotFoundException, String.valueOf(e.getCause()));
+  }
+
+  @Test
+  void stopReturnsNormally() throws Exception {
+    start(SingleSocketServer::new, new TestServerProcessFactory());
+    server.stop();
+    thread.join(5000);
+    assertFalse(thread.isAlive());
+  }
+
+  @Test
+  void poolSocketServerRequiresPool() {
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                new PoolSocketServer(new Parameter(new String[0]), new TestServerProcessFactory()));
+    assertTrue(e.getMessage().contains("port, back, pool"), e.getMessage());
+
+    Parameter noPool = new Parameter(new String[0]);
+    noPool.put("port", "0");
+    noPool.put("back", "50");
+    e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new PoolSocketServer(noPool, new TestServerProcessFactory()));
+    assertTrue(e.getMessage().endsWith("pool"), e.getMessage());
+  }
+
+  /** 処理中の接続を1本確立して、サーバ側で登録されるまで待つ. */
+  Socket connectAndWaitRegistered(int port) throws Exception {
+    Socket socket = new Socket(InetAddress.getLoopbackAddress(), port);
+    for (int i = 0; i < 500 && server.processList.isEmpty(); i++) {
+      Thread.sleep(10);
+    }
+    assertFalse(server.processList.isEmpty());
+    return socket;
+  }
+
+  /** グレースフル停止: 期限内に終わる接続は強制クローズされず、終わった時点で停止が完了する. */
+  void assertGracefulStopWaits(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(creator, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      Thread stopper = new Thread(() -> server.stop(10000));
+      stopper.start();
+      assertFalse(factory.forceClosed.await(300, TimeUnit.MILLISECONDS));
+      assertTrue(stopper.isAlive());
+      assertTrue(server.serverSocket.isClosed());
+      // 接続の処理が自然に終わると、待機が打ち切られる
+      factory.release.countDown();
+      stopper.join(5000);
+      assertFalse(stopper.isAlive());
+    }
+  }
+
+  /** グレースフル停止: 期限後に残った接続が強制クローズされる. */
+  void assertGracefulStopForceClosesAfterTimeout(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(creator, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      long begin = System.nanoTime();
+      server.stop(300);
+      assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin) >= 250);
+      assertTrue(factory.forceClosed.await(5, TimeUnit.SECONDS));
+    }
+  }
+
+  /** グレースフル停止: キュー待ち・起動直後の接続が、待機中に実行されて完了する. */
+  void assertGracefulStopRunsQueued(
+      BiFunction<Parameter, ServerProcessFactory, AbstractSocketServer> creator) throws Exception {
+    TestServerProcessFactory factory = new TestServerProcessFactory();
+    Parameter parameter = parameter();
+    parameter.put("pool", "1");
+    server = creator.apply(parameter, factory);
+    thread = new Thread(server::execute);
+    thread.setDaemon(true);
+    thread.start();
+    for (int i = 0; i < 500 && server.serverSocket == null; i++) {
+      Thread.sleep(10);
+    }
+    int port = server.serverSocket.getLocalPort();
+    // 1接続目が1バイト待ちでワーカーを占有し、2接続目はキュー待ちになる
+    try (Socket first = new Socket(InetAddress.getLoopbackAddress(), port);
+        Socket second = new Socket(InetAddress.getLoopbackAddress(), port)) {
+      second.setSoTimeout(5000);
+      Thread.sleep(300);
+      Thread stopper = new Thread(() -> server.stop(10000));
+      stopper.start();
+      Thread.sleep(200);
+      first.getOutputStream().write(1);
+      first.getOutputStream().flush();
+      second.getOutputStream().write(2);
+      second.getOutputStream().flush();
+      assertEquals(2, second.getInputStream().read());
+      stopper.join(5000);
+      assertFalse(stopper.isAlive());
+      assertEquals(2, factory.executed.get());
+    }
+  }
+
+  @Test
+  void gracefulStopRunsQueuedPool() throws Exception {
+    assertGracefulStopRunsQueued(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopRunsQueuedVirtual() throws Exception {
+    assertGracefulStopRunsQueued(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopRunsQueuedMulti() throws Exception {
+    assertGracefulStopRunsQueued(MultiSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsSingle() throws Exception {
+    assertGracefulStopWaits(SingleSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsMulti() throws Exception {
+    assertGracefulStopWaits(MultiSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsPool() throws Exception {
+    assertGracefulStopWaits(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopWaitsVirtual() throws Exception {
+    assertGracefulStopWaits(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutMulti() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(MultiSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutPool() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(PoolSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopTimeoutVirtual() throws Exception {
+    assertGracefulStopForceClosesAfterTimeout(VirtualSocketServer::new);
+  }
+
+  @Test
+  void gracefulStopZeroIsImmediate() throws Exception {
+    TestServerProcessFactory factory =
+        new TestServerProcessFactory(true, System.currentTimeMillis());
+    int port = start(MultiSocketServer::new, factory);
+    try (Socket socket = connectAndWaitRegistered(port)) {
+      server.stop(0);
+      assertTrue(factory.forceClosed.await(5, TimeUnit.SECONDS));
+    }
+  }
+
+  /** Serverのdefault実装は、stop()を呼ぶ. */
+  @Test
+  void defaultStopWithTimeoutCallsStop() {
+    AtomicInteger stopped = new AtomicInteger();
+    Server custom =
+        new Server() {
+          public void execute() {}
+
+          public void stop() {
+            stopped.incrementAndGet();
+          }
+        };
+    custom.stop(1000);
+    assertEquals(1, stopped.get());
+  }
+
+  /** status()に、状態・処理中の接続数・実行待ち数・拒否の累計・設定が含まれ、キュー満杯が反映されることを確認する. */
+  @Test
+  void statusPoolReflectsQueueAndRejections() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    PoolSocketServer pool = startBlockingPool(factory, "queue", "1");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.created.get() < 2; i++) {
+      Thread.sleep(10);
+    }
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[2].await(10, TimeUnit.SECONDS));
+    String status = pool.status();
+    assertTrue(status.contains("状態: 待機中"), status);
+    assertTrue(status.contains("処理中の接続数: 1"), status);
+    assertTrue(status.contains("実行待ち数: 1"), status);
+    assertTrue(status.contains("queue満杯=1"), status);
+    assertTrue(status.contains("maxConnection超過=0"), status);
+    assertTrue(status.contains("pool=1"), status);
+    assertTrue(status.contains("queue=1"), status);
+    assertTrue(status.contains("timeout=60000"), status);
+    assertFalse(status.contains("host="), status);
+    factory.release.countDown();
+  }
+
+  @Test
+  void statusQueueTimeoutIsCounted() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    PoolSocketServer pool = startBlockingPool(factory, "queueTimeout", "300");
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    assertTrue(factory.closed[1].await(10, TimeUnit.SECONDS));
+    assertTrue(pool.status().contains("キュー待ちタイムアウト=1"), pool.status());
+    factory.release.countDown();
+  }
+
+  /** maxConnection超過がstatus()に反映され、実行待ち数は出力されないことを確認する. */
+  @Test
+  void statusMaxConnectionIsCounted() throws Exception {
+    BlockingFactory factory = new BlockingFactory();
+    int port =
+        start(
+            (p, f) -> {
+              p.put("timeout", "60000");
+              p.put("maxConnection", "1");
+              p.put("host", "127.0.0.1");
+              return new MultiSocketServer(p, f);
+            },
+            factory,
+            serverLog);
+    sockets.add(new Socket(InetAddress.getLoopbackAddress(), port));
+    for (int i = 0; i < 500 && factory.executed.get() < 1; i++) {
+      Thread.sleep(10);
+    }
+    Socket rejected = new Socket(InetAddress.getLoopbackAddress(), port);
+    sockets.add(rejected);
+    rejected.setSoTimeout(10000);
+    assertEquals(-1, rejected.getInputStream().read());
+    String status = server.status();
+    assertTrue(status.contains("maxConnection超過=1"), status);
+    assertTrue(status.contains("処理中の接続数: 1"), status);
+    assertFalse(status.contains("実行待ち数"), status);
+    assertTrue(status.contains("host=127.0.0.1"), status);
+    assertTrue(status.contains("maxConnection=1"), status);
+    factory.release.countDown();
+  }
+
+  /** 未起動・グレースフル停止の待機中・停止後でも、例外にならず状態が切り替わることを確認する. */
+  @Test
+  void statusStates() {
+    AbstractSocketServer local = new PoolSocketServer(parameter(), new TestServerProcessFactory());
+    assertTrue(local.status().contains("状態: 待機中"));
+    local.draining = true;
+    local.alive = false;
+    assertTrue(local.status().contains("状態: グレースフル停止の待機中"));
+    local.draining = false;
+    local.stop();
+    String status = local.status();
+    assertTrue(status.contains("状態: 停止中"), status);
+    assertTrue(status.contains("実行待ち数: 0"), status);
+  }
+
+  /** toString()が短い1行であることを確認する. */
+  @Test
+  void toStringIsOneLine() {
+    Parameter p = parameter();
+    p.put("port", "8080");
+    AbstractSocketServer local = new MultiSocketServer(p, new TestServerProcessFactory());
+    assertEquals("MultiSocketServer[port=8080, alive=true, connections=0]", local.toString());
+  }
+
+  /** Serverのdefault実装は、toString()を返す. */
+  @Test
+  void defaultStatusIsToString() {
+    Server custom =
+        new Server() {
+          public void execute() {}
+
+          public void stop() {}
+
+          public String toString() {
+            return "custom";
+          }
+        };
+    assertEquals("custom", custom.status());
   }
 }

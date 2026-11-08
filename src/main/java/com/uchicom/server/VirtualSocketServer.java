@@ -19,15 +19,19 @@ public class VirtualSocketServer extends AbstractSocketServer {
   @Override
   public void stop() {
     super.stop();
-    exec.shutdown();
+    forceCloseDiscarded(exec.shutdownNow());
   }
 
   /** メイン処理 */
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
-      exec.execute(() -> executeProcess(process));
+      // 上限超過の場合は、ServerProcessを生成せずにnullが返る
+      final ServerProcess process = acceptLimitedProcess(serverSocket);
+      if (process == null) {
+        continue;
+      }
+      submitProcess(exec, process, true);
     }
   }
 }

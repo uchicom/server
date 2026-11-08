@@ -15,9 +15,22 @@ Java 25 以上が必要です。Maven Central で公開しています。
 <dependency>
 <groupId>com.uchicom</groupId>
 <artifactId>server</artifactId>
-<version>0.3.0</version>
+<version>0.4.0</version>
 </dependency>
 ```
+
+モジュールシステム
+-----------------
+
+`module-info.java` を提供しており、モジュール名は `com.uchicom.server` です(`com.uchicom.server` パッケージを `exports`)。
+
+```java
+requires com.uchicom.server;
+```
+
+依存する `com.uchicom:util` は 1.6.6 からモジュール化(`com.uchicom.util`)されたため、`module-info.java` を採用しました。
+`Parameter` が公開 API に露出するため、`requires transitive com.uchicom.util` としています。
+1.6.5 以前の `util` は `module-info.java` も `Automatic-Module-Name` も持たなかったため、この方針は 1.6.6 以上が前提です。
 
 最小の実装例
 -----------------
@@ -85,6 +98,11 @@ static class EchoProcess implements ServerProcess {
 
 `ServerProcess#getLastTime()` は最終アクセス時刻(ミリ秒)を返します。アイドルタイムアウトの判定に使われるため、通信のたびに更新してください。
 
+### equals / hashCode に関する注意
+
+`ServerProcess` の実装クラスでは、`equals` / `hashCode` を**オーバーライドせず、同一性ベース(`Object` の既定の実装)のまま**にしてください。
+サーバは監視対象の管理(`List#remove` や `Map` のキー)で `equals` / `hashCode` に依存しています。値ベースで実装すると、別の接続が同一視されて、誤って監視対象から外れたり(アイドルタイムアウトや `stop()` の強制クローズの対象外になる)、登録時刻が上書きされたりします。
+
 Parameter のキー一覧
 -----------------
 
@@ -92,8 +110,12 @@ Parameter のキー一覧
 |---|---|---|
 | `port` | 必須 | 待ち受けるポート番号 |
 | `back` | 必須 | 接続待ちキュー(backlog)の最大長 |
+| `host` | 任意 | 待ち受けるアドレス(例: `127.0.0.1`)。未指定時は全インターフェースで待ち受ける(従来どおり) |
 | `pool` | `PoolSocketServer` のみ必須 | スレッドプールのスレッド数 |
 | `timeout` | 任意 | アイドルタイムアウト(ミリ秒)。未指定時は10000 |
+| `queue` | 任意 | `PoolSocketServer` の実行待ち接続数の上限。未指定時は無制限(従来どおり)。上限を超えた接続は受け付け直後にクローズする |
+| `queueTimeout` | 任意 | `PoolSocketServer` の実行待ちタイムアウト(ミリ秒)。未指定時は `timeout` の値(それも未指定なら10000) |
+| `maxConnection` | 任意 | `MultiSocketServer` / `VirtualSocketServer` の最大同時接続数。未指定時は上限なし(従来どおり)。上限に達している間に受け付けた接続は、受け付け直後に `ServerProcess#forceClose()` でクローズし、既存の接続には影響しない |
 | `ssl` | 任意 | 指定するとSSL(TLS)で待ち受ける。以下のキーを使用する |
 | `keyStorePass` | `ssl` 時に必須 | キーストアのパスワード。未指定だとエラー |
 | `keyStoreName` | `ssl` 時に必須 | キーストアのファイルパス。未指定だとエラー |
@@ -102,9 +124,22 @@ Parameter のキー一覧
 | `protocol` | 任意 | `SSLContext` のプロトコル。既定は `TLS` |
 | `sslProtocol` | 任意 | 有効にする SSL プロトコル。複数指定は `:` 区切り。既定は `TLSv1.3:TLSv1.2` |
 
-SSL は `ssl`、`keyStoreName`、`keyStorePass` だけで有効にできます。`sslProtocol` を指定すると既定の有効プロトコルを上書きします。
+数値キーの有効範囲
+-----------------
 
-`SelectorServer` が使用するのは `port` と `back` のみです(SSL は非対応)。
+コンストラクタで形式(整数)と範囲を検証し、不正なキーをすべて列挙した `IllegalArgumentException` を投げます(サーバは起動しません)。
+
+| キー | 有効範囲 |
+|---|---|
+| `port` | 0〜65535(0 は空きポートを自動割り当て) |
+| `back` | 0以上 |
+| `pool` | 1以上 |
+| `queue` | 1以上 |
+| `queueTimeout` | 1以上(ミリ秒) |
+| `timeout` | 1以上(ミリ秒) |
+| `maxConnection` | 1以上 |
+
+SSL は `ssl`、`keyStoreName`、`keyStorePass` だけで有効にできます。`sslProtocol` を指定すると既定の有効プロトコルを上書きします。
 
 Server の種類
 -----------------
@@ -112,17 +147,98 @@ Server の種類
 | Server | 処理方式 | 用途・特徴 |
 |---|---|---|
 | `SingleSocketServer` | 受付スレッドで1接続ずつ順番に処理 | 同時接続を1つに限定したい場合。処理中は他の接続が待たされる |
-| `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。接続数に上限がなく、多数接続ではスレッドが増える |
+| `MultiSocketServer` | 接続ごとに新しいデーモンスレッドを生成 | 実装が単純。既定では接続数に上限がなく、多数接続ではスレッドが増える(`maxConnection` で制限可能) |
 | `PoolSocketServer` | `pool` 個の固定スレッドプールで処理 | 同時処理数を制限したい場合。`pool` を超える接続はプールの空きを待つ |
 | `VirtualSocketServer` | 接続ごとに仮想スレッドを生成 | 多数の接続をブロッキング I/O で扱いたい場合 |
-| `SelectorServer` | NIO の `Selector` で単一スレッドが多重化 | `ServerProcessFactory` ではなく `HandlerFactory` / `Handler` を実装する |
+
+### execute() の戻りと例外
+
+- `stop()` による停止では、例外なく正常に return します。
+- 起動の失敗(ポート使用中などの bind 失敗、SSL 設定の誤り、キーストアの不在・読み込み失敗など)や、実行中の想定外の異常終了では、原因を cause に持つ `IllegalStateException` を投げます(ERROR ログも出力します)。後始末(監視スレッドの停止など)は例外を投げる前に行われます。
+- 利用者は `execute()` の例外を捕捉することで、異常終了と正常停止を区別できます。
 
 ### 停止の挙動
 
 - `stop()` は `alive` を false にし、サーバソケットを閉じて `accept()` を中断させます。`execute()` はその後に戻ります。
-- `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdown()` を呼びます。処理中の接続は終了まで継続されます。
-- `MultiSocketServer` の接続スレッドはデーモンスレッドのため、他にスレッドがなければ JVM の終了とともに破棄されます。
-- `SelectorServer` は `Selector#wakeup()` でループを終了し、登録済みのチャンネルをすべて閉じます。
+- `stop()` は監視スレッドを停止した後、残っている接続をすべて `ServerProcess#forceClose()` で即時に強制クローズします(タイムアウトを待ちません)。`forceClose()` が例外を投げても、残りの接続のクローズは継続します。
+- `stop(long timeoutMillis)` はグレースフル停止です。新規の接続受付を止め、処理中の接続に加え、実行待ち(`PoolSocketServer` のキュー待ち)・起動直後の接続も実行して、終わるのを最大 `timeoutMillis` ミリ秒待ち(全接続が終わった時点で打ち切り)、期限後に残った接続を `forceClose()` で強制クローズして `stop()` と同じ後始末を行います。
+- 呼び出したスレッドをブロックします。`execute()` は待機中に戻ることがあります。
+- 待機中もアイドルタイムアウト(`timeout`)の監視は継続します。
+- `timeoutMillis` が 0 以下なら `stop()` と同じです。`Server` インターフェースでは default メソッド(既定は `stop()` と同じ)のため、既存の実装は壊れません。
+- `PoolSocketServer` / `VirtualSocketServer` は `stop()` で `ExecutorService#shutdownNow()` を呼び、実行中のタスクを interrupt し、未着手のタスクを破棄します。
+- `PoolSocketServer` のスレッドはデーモンスレッドです。`MultiSocketServer` の接続スレッドもデーモンスレッドのため、JVM は `stop()` 後に終了できます。
+
+稼働状況(status)
+-----------------
+
+`Server#status()` は、稼働状況を複数行の文字列で返します(ロックは取らないため、各値は多少ずれることがあります。停止後や未起動でも例外になりません)。
+`Server` インターフェースでは default メソッド(既定は `toString()`)のため、既存の実装は壊れません。
+
+```
+状態: 待機中
+処理中の接続数: 3
+実行待ち数: 0
+拒否・破棄の累計: maxConnection超過=0, queue満杯=0, キュー待ちタイムアウト=0
+設定: port=8080, pool=4, queue=10, timeout=10000
+```
+
+- 状態: `待機中` / `停止中` / `グレースフル停止の待機中`
+- 実行待ち数は `PoolSocketServer` のみ出力します。
+- 設定は、指定されたキーのみ(`port` / `host` / `pool` / `queue` / `maxConnection` / `timeout`)出力します。
+- `toString()` はログやデバッガー向けの短い1行です(例: `MultiSocketServer[port=8080, alive=true, connections=12]`)。
+
+### plate の status コマンドから呼ぶ場合
+
+plate は設定ファイルで static メソッドの main / shutdown を指定できます。アプリ側の static フィールドに `Server` を保持し、`String` を返す static メソッド `status()` を用意すると、plate の `status` コマンドで表示できます。
+クラスローダーをまたぐ可能性があるため、返り値は型を持たない `String` にしてください。
+
+```java
+public class EchoMain {
+	private static volatile Server server;
+
+	public static void main(String[] args) {
+		server = new MultiSocketServer(new Parameter(args), new EchoFactory());
+		server.execute();
+	}
+
+	public static void shutdown() {
+		Server s = server;
+		if (s != null) {
+			s.stop();
+		}
+	}
+
+	public static String status() {
+		Server s = server;
+		return s == null ? "not running" : s.status();
+	}
+}
+```
+
+ログ
+-----------------
+
+エラーは JDK 標準の `System.Logger`(依存追加なし)で出力します。出力先・レベルは、利用側の `System.Logger` 実装(既定では `java.util.logging`、または SLF4J などへのブリッジ)の設定で制御できます。
+
+- ロガー名: `com.uchicom.server`
+- `ERROR`: 異常(サーバの異常終了、accept の失敗、`ServerProcessFactory` での生成失敗、`forceClose()` の例外など)
+- `WARNING`: 接続の拒否・破棄(`maxConnection` 超過、`queue` 満杯、キュー待ちタイムアウト)
+- `INFO`: accept / `ServerProcessFactory` での生成が連続失敗した後の復旧通知
+
+accept が連続して失敗する場合(fd 枯渇など)は、ログが溢れないよう間引きます。
+
+- 初回のみ、スタックトレース付きで出力します。
+- 以降は 100 件ごとに、連続失敗の件数と直近の例外のみを出力します。
+- accept が成功すると連続回数をリセットします(間引いた分がある場合は、`INFO` で復旧を通知します)。
+
+`ServerProcessFactory` での生成失敗(`createServerProcess` の例外)も同様に間引きます(初回のみスタックトレース付き、以降は 100 件ごと、成功でリセットし復旧を `INFO` で通知)。
+
+接続の拒否・破棄は、理由別に `WARNING` で出力します。件数が多い場合に溢れないよう、初回と累計 100 件ごと(件数付き)のみ出力します。
+
+- `maxConnection` 超過: `connection rejected: maxConnection exceeded`
+- `queue` 満杯(実行待ちの上限超過): `connection rejected: queue full or executor unavailable`
+- キュー待ちタイムアウト: `connection discarded: queue wait timeout`
+- `stop()` 後の拒否は想定内のためログしません。
 
 アイドルタイムアウト
 -----------------
@@ -136,6 +252,14 @@ Server の種類
 | MultiSocketServer | 対象 |
 | PoolSocketServer | 対象 |
 | VirtualSocketServer | 対象 |
-| SelectorServer | **対象外** |
 
-`SelectorServer` は接続ごとの `ServerProcess` がなく、`Handler` が非同期に処理を進めるため、アイドル判定の対象外です。
+### 実行待ちの接続
+
+`PoolSocketServer` でプールが満杯のとき、接続は実行待ちになります。待機中の接続は、アイドルタイムアウトの監視対象外です。
+代わりに次の制限があります。
+
+- `queue` を指定すると、実行待ちの接続数に上限を設けます。上限を超えた接続は、受け付けた直後に `ServerProcess#forceClose()` でクローズします。未指定時は無制限です。
+- 実行待ちの時間が `queueTimeout`(未指定時は `timeout`)を超えた接続は、監視スレッドが実行待ちから取り除いて `forceClose()` でクローズします(判定間隔は約1秒)。
+
+実行を開始して監視対象に登録した時刻が記録され、タイムアウトは `getLastTime()` と登録時刻の新しい方を基準に判定します。
+そのため、待機時間が `timeout` を超えた接続が実行開始の直後に `forceClose()` されることはありません(`ServerProcess` 側で特別な対応は不要です)。

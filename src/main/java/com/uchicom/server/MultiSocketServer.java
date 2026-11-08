@@ -3,6 +3,7 @@ package com.uchicom.server;
 
 import com.uchicom.util.Parameter;
 import java.io.IOException;
+import java.lang.System.Logger.Level;
 import java.net.ServerSocket;
 
 public class MultiSocketServer extends AbstractSocketServer {
@@ -15,15 +16,48 @@ public class MultiSocketServer extends AbstractSocketServer {
   @Override
   protected void execute(ServerSocket serverSocket) throws IOException {
     while (alive) {
-      final ServerProcess process = factory.createServerProcess(parameter, serverSocket.accept());
+      // 上限超過の場合は、ServerProcessを生成せずにnullが返る
+      final ServerProcess process = acceptLimitedProcess(serverSocket);
+      if (process == null) {
+        continue;
+      }
       Thread thread =
           new Thread() {
             public void run() {
-              executeProcess(process);
+              try {
+                executeProcess(process);
+              } finally {
+                releaseConnection();
+              }
             }
           };
       thread.setDaemon(true);
-      thread.start();
+      try {
+        startThread(thread);
+      } catch (Throwable e) {
+        // native thread不足(OutOfMemoryError)などでも、その接続だけ諦めてサーバを継続する
+        if (e instanceof VirtualMachineError && !(e instanceof OutOfMemoryError)) {
+          throw (VirtualMachineError) e;
+        }
+        releaseConnection();
+        logger.log(Level.ERROR, "thread start failed, connection dropped", e);
+        forceCloseQuietly(process);
+        waitAfterStartFailure();
+      }
+    }
+  }
+
+  /** スレッドを開始する. テストで失敗を再現できるよう、パッケージプライベートとしている. */
+  void startThread(Thread thread) {
+    thread.start();
+  }
+
+  /** 一時的な資源枯渇からの回復を待つ. */
+  private void waitAfterStartFailure() {
+    try {
+      Thread.sleep(acceptRetryWaitMillis);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 }
